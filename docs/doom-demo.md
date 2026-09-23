@@ -22,7 +22,8 @@ pressed, the latency, and the situation text the model read.
 ## Run it
 
 ```sh
-make setup            # includes the `doom` extra (vizdoom, ships freedoom2.wad)
+make setup            # create the environment and download the model
+uv sync --extra torch --extra doom  # install ViZDoom for the demo
 make serve            # terminal 1: load the model once
 make doom             # terminal 2: model plays defend_the_center
 ```
