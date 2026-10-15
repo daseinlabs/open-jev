@@ -37,6 +37,10 @@ from openjev import OptionScorer
 
 ::: openjev.systemone
 
+## `openjev.video`
+
+::: openjev.video
+
 ## `openjev.server`
 
 ::: openjev.server

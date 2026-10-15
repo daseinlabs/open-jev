@@ -46,6 +46,8 @@ class OptionScorer:
         model_path: local directory or Hugging Face repo id.
         backend: auto selects MLX on Apple silicon, PyTorch elsewhere.
         device: PyTorch device (auto, cpu, cuda, cuda:N, mps).
+        dtype: PyTorch weight dtype override (float32, float16, bfloat16).
+        vision_dtype: PyTorch dtype for the vision tower only (defaults to ``dtype``).
         batch_size: maximum number of options scored in one forward pass.
         chat: wrap the context in Gemma's chat template (user turn, generation
             prompt appended) so options are scored as the start of the reply.
@@ -62,6 +64,8 @@ class OptionScorer:
         adapter_path: str | None = None,
         backend: str = "auto",
         device: str = "auto",
+        dtype: str | None = None,
+        vision_dtype: str | None = None,
     ) -> None:
         if backend not in ("auto", "mlx", "torch"):
             raise ValueError("backend must be auto, mlx, or torch")
@@ -70,7 +74,7 @@ class OptionScorer:
         self._engine = None
         if self.backend == "torch":
             from .torch_backend import TorchBackend
-            self._engine = TorchBackend(model_path, device, adapter_path)
+            self._engine = TorchBackend(model_path, device, adapter_path, dtype=dtype, vision_dtype=vision_dtype)
             self.model, self.tok = self._engine.model, self._engine.tok
             self.device = str(self._engine.device)
         else:
@@ -110,6 +114,27 @@ class OptionScorer:
         if self.bos_id is not None and ids[:1] != [self.bos_id]:
             ids = [self.bos_id] + ids
         return ids
+
+    def _multimodal_inputs(self, context: str, images: list, chat: bool | None, sep: str | None) -> dict:
+        chat = self.chat if chat is None else chat
+        sep = self.sep if sep is None else sep
+        if chat:  # images go at the start of the user turn
+            text = self.tok.apply_chat_template([{"role": "user", "content": context}],
+                                                tokenize=False, add_generation_prompt=True)
+            head = "<start_of_turn>user\n"
+            if head not in text:
+                raise ValueError("chat template has no user turn to attach images to")
+            pre, _, post = text.partition(head)
+            enc = self._engine.encode_multimodal(post, images, add_bos=False)
+            head_ids = self.tok.encode(pre + head, add_special_tokens=False)
+            if self.bos_id is not None and head_ids[:1] != [self.bos_id]:
+                head_ids = [self.bos_id] + head_ids
+            import torch
+            enc["token_type_ids"] = torch.cat([torch.zeros(len(head_ids), dtype=enc["token_type_ids"].dtype),
+                                               enc["token_type_ids"]])
+            enc["input_ids"] = head_ids + enc["input_ids"]
+            return enc
+        return self._engine.encode_multimodal(context + sep, images, add_bos=True)
 
     def option_ids(self, option: str) -> list[int]:
         ids = self.tok.encode(option, add_special_tokens=False)
@@ -170,15 +195,30 @@ class OptionScorer:
         norm: str = "mean",
         chat: bool | None = None,
         sep: str | None = None,
+        images: Sequence | None = None,
+        image_features=None,
     ) -> list[OptionScore]:
+        """Score ``options`` as continuations of ``context``.
+
+        ``images`` (PIL images, e.g. video frames) are placed before the context, in order.
+        Image input currently needs the torch backend and a Gemma 3 multimodal checkpoint.
+        ``image_features`` (from the engine's ``image_features``) reuses vision-tower output.
+        """
         if norm not in NORMS:
             raise ValueError(f"norm must be one of {NORMS}")
         if len(options) < 2:
             raise ValueError("need at least two options")
         t0 = time.perf_counter()
         opts = [self.option_ids(o) for o in options]
-        ctx_ids = self.context_ids(context, chat=chat, sep=sep)
-        cache, last = self._prefill(ctx_ids)
+        if images:
+            if self._engine is None:
+                raise ValueError("image/video input currently needs the torch backend (--backend torch)")
+            enc = self._multimodal_inputs(context, list(images), chat=chat, sep=sep)
+            ctx_ids = enc["input_ids"]
+            cache, last = self._engine.prefill_multimodal(enc, image_features=image_features)
+        else:
+            ctx_ids = self.context_ids(context, chat=chat, sep=sep)
+            cache, last = self._prefill(ctx_ids)
         t1 = time.perf_counter()
         sums = self._score_with_prefix(cache, last, opts)
         t2 = time.perf_counter()
@@ -196,6 +236,7 @@ class OptionScorer:
             "uncond_s": t3 - t2,
             "total_s": t3 - t0,
             "context_tokens": len(ctx_ids),
+            "images": len(images or ()),
             "option_tokens": sum(len(o) for o in opts),
         }
 

@@ -279,12 +279,14 @@ same split. If Gemma zero-shot is close to the trained head, Route B is enough; 
 
 - `openjev/torch_backend.py`: PyTorch CPU/GPU inference and shared-prefix KV cache scoring.
 - `openjev/scorer.py`: `OptionScorer` (prefill, cache expansion, batched scoring, naive reference).
+- `openjev/video.py`: video loading (path, URL, base64) and uniform frame sampling for image input (torch backend).
 - `openjev/systemone.py`: System One request/answer models, prompt renderers, zero-shot answers.
 - `openjev/server.py`: FastAPI app, `/health`, `/score`, `/v1/systemone`.
 - `openjev/features.py`: frozen-Gemma feature extraction and the `.npz` feature cache.
 - `openjev/head.py`: jevlike's cross-attention head in `mlx.nn`, save/load.
 - `openjev/train.py`: head training loop and evaluation (top-k, ECE, shuffled-context control).
 - `openjev/cli.py`: `openjev score | eval | bench | check | serve | features | train | eval-head`.
+- `video_eval/`: Perception Test multiple-choice eval for video input (see `docs/video.md`).
 - `demo/doom/`: Doom in the terminal, the server picks every action (`make doom`).
 - `models/`: downloaded weights (git-ignored).
 

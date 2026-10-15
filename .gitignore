@@ -18,3 +18,31 @@ data/chess/
 
 # Built Python distributions
 /dist/
+
+# Claude Code local settings and session files
+.claude/
+CLAUDE.local.md
+
+# Temp, editor and tool files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.log
+.idea/
+.vscode/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+.env
+.env.*
+graphify-out/
+
+# Perception Test videos and annotations (video_eval)
+data/perception_test/
