@@ -115,17 +115,19 @@ class OptionScorer:
             ids = [self.bos_id] + ids
         return ids
 
-    def _multimodal_inputs(self, context: str, images: list, chat: bool | None, sep: str | None) -> dict:
+    def _multimodal_inputs(self, context: str, images: list, chat: bool | None, sep: str | None,
+                           timestamps=None) -> dict:
         chat = self.chat if chat is None else chat
         sep = self.sep if sep is None else sep
         if chat:  # images go at the start of the user turn
             text = self.tok.apply_chat_template([{"role": "user", "content": context}],
                                                 tokenize=False, add_generation_prompt=True)
-            head = "<start_of_turn>user\n"
-            if head not in text:
+            # Gemma 3 opens a user turn with <start_of_turn>user, Gemma 4 with <|turn>user.
+            head = next((h for h in ("<start_of_turn>user\n", "<|turn>user\n") if h in text), None)
+            if head is None:
                 raise ValueError("chat template has no user turn to attach images to")
             pre, _, post = text.partition(head)
-            enc = self._engine.encode_multimodal(post, images, add_bos=False)
+            enc = self._engine.encode_multimodal(post, images, add_bos=False, timestamps=timestamps)
             head_ids = self.tok.encode(pre + head, add_special_tokens=False)
             if self.bos_id is not None and head_ids[:1] != [self.bos_id]:
                 head_ids = [self.bos_id] + head_ids
@@ -134,7 +136,7 @@ class OptionScorer:
                                                enc["token_type_ids"]])
             enc["input_ids"] = head_ids + enc["input_ids"]
             return enc
-        return self._engine.encode_multimodal(context + sep, images, add_bos=True)
+        return self._engine.encode_multimodal(context + sep, images, add_bos=True, timestamps=timestamps)
 
     def option_ids(self, option: str) -> list[int]:
         ids = self.tok.encode(option, add_special_tokens=False)
@@ -197,12 +199,15 @@ class OptionScorer:
         sep: str | None = None,
         images: Sequence | None = None,
         image_features=None,
+        timestamps: Sequence[float] | None = None,
     ) -> list[OptionScore]:
         """Score ``options`` as continuations of ``context``.
 
         ``images`` (PIL images, e.g. video frames) are placed before the context, in order.
-        Image input currently needs the torch backend and a Gemma 3 multimodal checkpoint.
-        ``image_features`` (from the engine's ``image_features``) reuses vision-tower output.
+        Image input currently needs the torch backend and a Gemma 3 or Gemma 4 multimodal checkpoint.
+        On Gemma 4 the images are the frames of one video and ``timestamps`` (seconds, one per
+        frame) label them as in HF's video prompt.
+        ``image_features`` (from the engine's ``frame_features``) reuses vision-tower output.
         """
         if norm not in NORMS:
             raise ValueError(f"norm must be one of {NORMS}")
@@ -213,7 +218,7 @@ class OptionScorer:
         if images:
             if self._engine is None:
                 raise ValueError("image/video input currently needs the torch backend (--backend torch)")
-            enc = self._multimodal_inputs(context, list(images), chat=chat, sep=sep)
+            enc = self._multimodal_inputs(context, list(images), chat=chat, sep=sep, timestamps=timestamps)
             ctx_ids = enc["input_ids"]
             cache, last = self._engine.prefill_multimodal(enc, image_features=image_features)
         else:

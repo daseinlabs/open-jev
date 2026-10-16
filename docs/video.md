@@ -37,6 +37,40 @@ print({r.option: r.probability for r in res})
 - `VideoLimits` caps file size, duration and frame count (64 by default). Bad input
   raises `VideoError` (a `ValueError`) with a message safe to return to clients.
 
+## Gemma 4 (E4B)
+
+Gemma 4 checkpoints (e.g. `models/gemma-4-E4B-it`) go through the same OpenJev scorer.
+`scorer._engine.frame_mode` picks how the frames enter the model:
+
+- `"images"` (default, like Gemma 3): each frame is a separate image (`<|image>` + soft
+  tokens + `<image|>`), resized with its aspect ratio kept to 280 tokens. 16 frames come to
+  about 4.3k prompt tokens, against 4.2k for Gemma 3.
+- `"video"`: Gemma 4's native video input. Each frame gets its `mm:ss` label and 70 tokens.
+  Pass the frame times:
+
+```python
+scorer = OptionScorer("models/gemma-4-E4B-it", backend="torch",
+                      dtype="bfloat16", vision_dtype="float16")
+res = scorer.score(prompt, labels, norm="sum", images=video.frames)       # frames as images
+scorer._engine.frame_mode = "video"
+res = scorer.score(prompt, labels, norm="sum", images=video.frames, timestamps=video.timestamps)
+```
+
+`scorer._engine.frame_soft_tokens` overrides the per-frame budget (70, 140, 280, 560 or 1120).
+
+- The frames are preprocessed with the PIL image processor, which runs the same steps
+  as HF's video processor, so torchvision is not needed.
+- The audio tower is dropped at load time. The per-layer embedding table (2.8B
+  parameters, only ever indexed) stays on the CPU, which keeps E4B at about 10 GB on MPS.
+- On MPS the prefill frees the allocator cache after each chunk. Without that, the growing
+  KV cache left a freed block of a new size every chunk, and 64 frames (17k tokens) ran out
+  of memory on 18 GB.
+- E-series models attend causally to vision tokens, with no bidirectional block mask.
+  Chunked prefill is therefore exact. `tests/test_torch_video_gemma4.py` checks it, and
+  option scoring, against HF's own forward on a tiny random model with KV sharing.
+- The chat template's user turn (`<|turn>user`) is detected like Gemma 3's
+  `<start_of_turn>user`, so `chat=True` works for both.
+
 ## Precision on Apple silicon
 
 Gemma 3's language model overflows to NaN in float16 on MPS when images are present,
@@ -58,5 +92,13 @@ videos from the 75 GB archive with HTTP range requests:
 ```sh
 python -m video_eval.perception_test fetch --questions 300
 python -m video_eval.perception_test run --frames 16
-python -m video_eval.perception_test report runs/video_eval/*.jsonl
+python -m video_eval.perception_test run --frames 16 --model models/gemma-4-E4B-it
+python -m video_eval.perception_test run --frames 16 --model models/gemma-4-E4B-it --frames-as video
+python -m video_eval.perception_test report runs/video_eval/perception_test*.jsonl
 ```
+
+Each `run` logs itself under `runs/video_eval/`: per-question rows (`<stem>.jsonl`, which a
+rerun resumes), the console (`<stem>.log`), the settings, versions and git commit
+(`<stem>.meta.json`), one summary line per invocation (`history.jsonl`), and a regenerated
+`report.md` comparing every run in the folder across models. These are written even when a
+run is interrupted.
