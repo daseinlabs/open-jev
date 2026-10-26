@@ -1,9 +1,8 @@
 """`openjev tod`: train and evaluate decision models from Dataset.write directories."""
 import json
-import os
 from pathlib import Path
 
-from ..scorer import DEFAULT_MODEL
+from ..backbone import DEFAULT_REPO
 
 
 def run(args):
@@ -23,8 +22,8 @@ def register(subparsers):
     commands = p.add_subparsers(dest='action', required=True)
     t = commands.add_parser('train', help='features -> head -> calibration -> per-kind test metrics')
     t.add_argument('dataset', type=Path, help='directory written by openjev.tod.Dataset.write')
-    t.add_argument('--model', default=os.environ.get('OPENJEV_MODEL', DEFAULT_MODEL),
-                   help='local backbone directory (default: $OPENJEV_MODEL or models/gemma-3-4b-it)')
+    t.add_argument('--model', default=None,
+                   help=f'backbone: a local directory or a Hugging Face repo id (default: $OPENJEV_MODEL, else {DEFAULT_REPO}, downloaded once)')
     t.add_argument('--out', type=Path, required=True)
     t.add_argument('--epochs', type=int, default=20)
     t.add_argument('--learning-rate', type=float, default=5e-5)

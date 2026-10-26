@@ -113,9 +113,11 @@ def evaluate_dataset(model, dataset, refit=False):
 def train_dataset(dataset, model, out, *, epochs=20, learning_rate=5e-5, rank=256, batch_size=64,
                   seed=7, log=None):
     from ..decision_mlx import train_artifact
+    from ..backbone import resolve
     log = log or (lambda message: print(message, flush=True))
     dataset, out = Path(dataset), Path(out)
     spec = dataset_spec(dataset)
+    model = resolve(model)  # None: $OPENJEV_MODEL, else the default Hugging Face repo
     if out.exists():
         raise ValueError(f'{out} already exists')
     report = json.loads((dataset/'manifest.json').read_text())['report']['splits']

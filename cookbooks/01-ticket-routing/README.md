@@ -1,5 +1,7 @@
 # 01 · Ticket routing: your first decision model
 
+**Run it as a notebook:** [`cookbook.ipynb`](cookbook.ipynb) (outputs included) · [Open in Colab](https://colab.research.google.com/github/daseinlabs/open-jev/blob/main/cookbooks/01-ticket-routing/cookbook.ipynb). The scripts below do the same from a terminal.
+
 **Goal:** turn a CSV of labelled support tickets into a model that picks a team and a
 priority for new tickets, and hands off the ones it isn't sure about.
 

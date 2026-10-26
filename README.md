@@ -30,7 +30,7 @@ build_dataset(spec, episodes).write('runs/routing')
 ```
 
 ```bash
-openjev tod train runs/routing --model models/gemma-3-4b-it --out runs/routing-model
+openjev tod train runs/routing --out runs/routing-model   # fetches the backbone from parsecai/gemma-3-4b-it on first use
 ```
 
 Chat traces, RL in a simulator, and deriving the spec from your tool schemas are covered in

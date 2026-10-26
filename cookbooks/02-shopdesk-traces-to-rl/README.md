@@ -1,5 +1,7 @@
 # 02 · ShopDesk: from chat traces to SFT to RL
 
+**Run it as a notebook:** [`cookbook.ipynb`](cookbook.ipynb) (outputs included) · [Open in Colab](https://colab.research.google.com/github/daseinlabs/open-jev/blob/main/cookbooks/02-shopdesk-traces-to-rl/cookbook.ipynb). The scripts below do the same from a terminal.
+
 **Goal:** see the whole lifecycle on one realistic problem. You take the logs of an
 existing support agent, turn them into a decision dataset, fine-tune a small model on
 them, measure it with deferral, and then use RL to fix a mistake the logs can't teach.
@@ -11,7 +13,7 @@ step1  traces.jsonl          an imperfect agent's chat logs (OpenAI format, with
 step2  dataset/              adapter.py cuts each conversation into decisions
 step3  sft/                  openjev tod train: features, head, calibration, test metrics
 step4  (report)              the model runs fresh conversations, with and without deferral
-step5  rl/                   REINFORCE in the simulator, starting from the SFT model
+step5  rl/                   improve: learn from reward in the simulator, starting from the SFT model
 ```
 
 ## The problem

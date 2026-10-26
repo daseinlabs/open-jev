@@ -16,12 +16,12 @@ It does not write free text. Anything that needs generation stays with the paren
 - `pip install openjev-sdk` (imports as `openjev`). On Linux, pip's default PyTorch wheel
   includes CUDA. For a specific CUDA or ROCm build, install `torch` first from
   [pytorch.org](https://pytorch.org/get-started/locally/).
-- A local copy of `google/gemma-3-4b-it`. Accept the Gemma license on Hugging Face, then:
-
-```bash
-hf auth login
-hf download google/gemma-3-4b-it --local-dir models/gemma-3-4b-it
-```
+- The Gemma 3 4B backbone, which downloads on first use from
+  [`parsecai/gemma-3-4b-it`](https://huggingface.co/parsecai/gemma-3-4b-it) into the Hugging
+  Face cache. Accept the Gemma terms on that page once, then run `hf auth login`. To use a
+  local copy instead, pass `--model DIR` or set `OPENJEV_MODEL`. A trained model records its
+  backbone's content fingerprint, so it runs on any machine with identical weights and
+  fetches them there if needed.
 
 ## Hardware and backends
 

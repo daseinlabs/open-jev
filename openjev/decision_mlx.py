@@ -49,7 +49,9 @@ def extract_features(data, model, out, split, batch_size=8, context_tokens=4096,
     out = Path(out)
     if out.exists() or out.suffix != '.npz':
         raise ValueError('feature output must be a new .npz file')
+    from .backbone import resolve
     tasks = load_tasks(data, labelled=True)
+    model = resolve(model)
     identity = model_identity(model)
     fx = extractor(model, batch_size)
     limits = dict(context_tokens=context_tokens, candidate_tokens=candidate_tokens)
@@ -148,8 +150,9 @@ def runtime_mismatch(expected, current=None):
 class DecisionScorer:
     """Load a trained local decision artifact and its frozen backbone (MLX or PyTorch).
 
-    ``model`` overrides the recorded backbone path when weights have moved; their
-    contents must still match. Reuse an instance across requests to load once.
+    ``model`` overrides the recorded backbone (a directory or Hugging Face repo id); when
+    it is omitted and the recorded directory is gone, the default backbone is fetched
+    (see `openjev.backbone`). Either way its contents must match. Reuse an instance across requests to load once.
     """
     def __init__(self, artifact, model=None, batch_size=8, calibrator=None):
         if batch_size < 1:
@@ -162,7 +165,10 @@ class DecisionScorer:
             self.calibrator = TemperatureCalibrator.load(calibrator, self.artifact_id)
             for split in ('train', 'validation'):
                 check_disjoint(self.calibrator.metadata['provenance'], self.manifest['training'][split])
-        model = model or self.manifest['backbone']['path']
+        from .backbone import resolve
+        recorded = Path(self.manifest['backbone']['path'])
+        # Trained elsewhere, or the cache moved: fetch the backbone again; the fingerprint below checks it.
+        model = resolve(model or (recorded if recorded.is_dir() else None))
         actual = model_identity(model)
         if actual['fingerprint'] != self.manifest['backbone']['fingerprint']:
             raise ValueError('backbone/tokenizer identity differs from the trained artifact')

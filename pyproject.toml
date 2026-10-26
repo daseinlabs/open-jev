@@ -1,6 +1,6 @@
 [project]
 name = "openjev-sdk"
-version = "0.2.0"
+version = "0.2.1"
 description = "Train small task-oriented decision models on your own traces: pick, calibrate, defer, and improve with RL"
 readme = "README.md"
 license = "MIT"
