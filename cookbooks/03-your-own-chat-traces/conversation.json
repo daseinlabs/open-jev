@@ -1,0 +1,31 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are ShopDesk, a retail support agent. Look orders up before acting on them.\nCustomer profile: {\"name\": \"Ivan\", \"orders\": [{\"id\": \"W1125\", \"item\": \"yoga mat\"}, {\"id\": \"W8190\", \"item\": \"cast-iron pan\"}, {\"id\": \"W9089\", \"item\": \"backpack\"}]}"
+    },
+    {
+      "role": "user",
+      "content": "Changed my mind about the yoga mat, can you cancel it?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "type": "function",
+          "function": {
+            "name": "get_order",
+            "arguments": "{\"order_id\": \"W1125\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_0",
+      "content": "{\"id\": \"W1125\", \"item\": \"yoga mat\", \"status\": \"pending\"}"
+    }
+  ]
+}

@@ -116,3 +116,76 @@ class TODTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DedupTests(unittest.TestCase):
+    def test_identical_inputs_are_dropped_and_conflicts_counted(self):
+        s = spec()
+        state = {'orders': ['W1', 'X1'], 'message': 'same words'}
+        episodes = [Episode(f'conv-{i}', (s.decision(f'{i}', 'action', state, choice=choice),))
+                    for i, choice in enumerate(['cancel', 'cancel', 'reply'])]
+        ds = build_dataset(s, episodes)
+        self.assertEqual(sum(len(rows) for rows in ds.splits.values()), 1)
+        self.assertEqual((ds.report['duplicates_dropped'], ds.report['duplicates_with_different_label']), (2, 1))
+
+
+class ShopDeskTests(unittest.TestCase):
+    def test_oracle_through_protocol_always_succeeds(self):
+        from openjev.tod.envs.shopdesk import ShopDesk
+        for seed in range(200):
+            env = ShopDesk().reset(seed)
+            while env.observe() is not None:
+                env.defer()
+            self.assertEqual(env.reward(), 1.0)
+
+    def test_teacher_traces_never_resolve_a_closed_window(self):
+        from openjev.tod.envs.shopdesk import record_trace
+        for i in range(300):
+            trace = record_trace(str(i), i)
+            calls = [m['tool_calls'][0]['function']['name'] for m in trace['messages'] if m.get('tool_calls')]
+            results = [json.loads(m['content']) for m in trace['messages'] if m['role'] == 'tool']
+            if trace['outcome'] and any(r.get('return_window') == 'closed' for r in results):
+                self.assertIn(calls[-1], ('send_tracking', 'cancel_order', 'transfer_to_human'))
+
+    def test_rollout_acts_defers_and_records_steps(self):
+        import numpy as np
+        from openjev.tod.envs.shopdesk import ShopDesk
+        from openjev.tod.rl import HeadPolicy
+        shop = DecisionSpec('shop', [
+            Kind('action', 'Next tool?', lambda s: [Candidate(t, t, payload=t) for t in
+                 ('get_order', 'cancel_order', 'return_order', 'send_tracking', 'transfer_to_human')], '1'),
+            Kind('arg.order_id', 'Which order?', lambda s: [Candidate(o['id'], o['item'], payload=o['id'])
+                                                            for o in s['orders']], '1')])
+        env = ShopDesk()
+        policy = object.__new__(HeadPolicy)
+        policy.spec = shop
+        policy.heads = {k: {'temperature': 1.0} for k in shop.kinds}
+
+        def logits(decision):  # confident oracle on actions, uniform (so deferred) on orders
+            right = env.oracle()[0] if decision.kind == 'action' else None
+            return None, None, np.array([9. if c.id == right else 0. for c in decision.candidates])
+        policy.logits = logits
+        run = policy.rollout(env, 3, threshold=0.9)
+        self.assertEqual(run.reward, 1.0)
+        self.assertEqual(run.decided, len(run.steps))
+        self.assertGreater(run.decided, 0)
+        self.assertGreater(run.deferred, 0)
+
+
+class ChatTraceTests(unittest.TestCase):
+    def test_spec_from_tool_schemas_and_coverage(self):
+        from openjev.tod.chat_traces import episodes_from_traces, spec_from_tools
+        from openjev.tod.envs.shopdesk import record_trace
+        traces = [record_trace(f'c{i}', i * 2) for i in range(40)]
+        bare = spec_from_tools('auto', traces[0]['tools'], id_params={'order_id': []})
+        _, coverage = episodes_from_traces(traces, bare)
+        self.assertNotIn('decisions', coverage['order_id'])
+        aliased = spec_from_tools('auto', traces[0]['tools'], id_params={'order_id': ['id']})
+        self.assertNotEqual(bare.fingerprint, aliased.fingerprint)
+        episodes, coverage = episodes_from_traces(traces, aliased)
+        self.assertGreater(coverage['order_id']['decisions'], 0)
+        kinds = {d.kind for e in episodes for d in e.decisions}
+        self.assertEqual(kinds, {'action', 'arg.order_id'})
+        order = next(d for e in episodes for d in e.decisions if d.kind == 'arg.order_id')
+        self.assertIn('item:', order.candidates[0].text)
+        self.assertEqual(build_dataset(aliased, episodes).report['recall_miss_rate']['arg.order_id'], 0.0)

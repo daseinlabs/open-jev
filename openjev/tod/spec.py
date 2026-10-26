@@ -148,7 +148,7 @@ def build_dataset(spec: DecisionSpec, episodes: Iterable[Episode], *, fractions=
     if not math.isclose(sum(fractions.values()), 1) or min(fractions.values()) < 0:
         raise ValueError('split fractions must be nonnegative and sum to 1')
     splits = {name: [] for name in fractions}
-    ids, filtered = set(), 0
+    ids, seen, filtered, duplicates, conflicts = set(), {}, 0, 0, 0
     for episode in episodes:
         if min_outcome is not None and (episode.outcome is None or episode.outcome < min_outcome):
             filtered += 1
@@ -158,6 +158,13 @@ def build_dataset(spec: DecisionSpec, episodes: Iterable[Episode], *, fractions=
             if d.id in ids:
                 raise ValueError(f'duplicate decision id {d.id!r}')
             ids.add(d.id)
+            # An identical input in two splits would leak; keep the first occurrence only.
+            key = d.to_choice_task(require_choice=False).input_fingerprint
+            if key in seen:
+                duplicates += 1
+                conflicts += seen[key] != d.target
+                continue
+            seen[key] = d.target
             d = replace(d, group_id=d.group_id or episode.id)
             splits[split_of(d.group_id, seed, fractions)].append(d)
     names = list(splits)
@@ -166,7 +173,8 @@ def build_dataset(spec: DecisionSpec, episodes: Iterable[Episode], *, fractions=
         for b in names[i+1:]:
             if tasks[a] and tasks[b]:
                 check_disjoint(provenance(tasks[a]), provenance(tasks[b]))
-    report = dict(filtered_episodes=filtered, splits={})
+    report = dict(filtered_episodes=filtered, duplicates_dropped=duplicates,
+                  duplicates_with_different_label=conflicts, splits={})
     for name, rows in splits.items():
         counts = defaultdict(Counter)
         for d in rows:

@@ -58,6 +58,7 @@ nav:
   - Guides:
       - CLI reference: cli.md
       - Training a head: training.md
+      - Decision-model SDK: tod-sdk.md
       - Doom demo: doom-demo.md
   - Design notes:
       - One-pass option scoring: design/one-pass-option-scoring.md

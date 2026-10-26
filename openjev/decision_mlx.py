@@ -1,37 +1,30 @@
-"""MLX native candidate-head training and inference, imported only when requested."""
+"""Native candidate-head training and inference on MLX or PyTorch (see `openjev.compute`),
+imported only when requested. (The module name predates the PyTorch backend.)"""
 from __future__ import annotations
 
-import importlib.metadata
 import json
-import platform
 from pathlib import Path
 import time
 from collections.abc import Mapping
 
 import numpy as np
 
+from . import compute
 from .decision import (RECIPE, ChoiceTask, check_disjoint, choice_result, digest,
                        file_digest, load_tasks, model_identity, provenance,
                        read_artifact, render_context)
 
 
-def require_mlx():
-    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
-        raise ValueError('Native decision heads currently require MLX on Apple silicon')
-
-
 def versions():
-    result = {}
-    for name in ('mlx', 'mlx-lm', 'transformers', 'numpy'):
-        result[name] = importlib.metadata.version(name)
-    return result
+    return compute.versions()
 
 
 def extractor(model, batch_size):
-    require_mlx()
     from .scorer import OptionScorer
     from .features import FeatureExtractor
-    scorer = OptionScorer(model, backend='mlx', batch_size=batch_size, chat=False, sep='')
+    backend = compute.backend()
+    scorer = OptionScorer(model, backend=backend, device='auto' if backend == 'mlx' else compute.device(),
+                          batch_size=batch_size, chat=False, sep='')
     if scorer.bos_id is None:
         raise ValueError('independent candidate features require a BOS token')
     scorer.model.eval()
@@ -123,7 +116,6 @@ def train_artifact(train_path, validation_path, out, rank=256, epochs=8, batch_s
     out = Path(out)
     if out.exists():
         raise ValueError('artifact output directory already exists')
-    require_mlx()
     from .train import train
     out.mkdir(parents=True, exist_ok=False)
     result = train(str(train_path), str(validation_path), str(out/'head.safetensors'),
@@ -142,8 +134,19 @@ def train_artifact(train_path, validation_path, out, rank=256, epochs=8, batch_s
     return dict(artifact=str(out), best_val_top1=result['best_val_top1'])
 
 
+def runtime_mismatch(expected, current=None):
+    """Differences between the runtime that extracted an artifact's features and this one.
+
+    The backend may differ: heads load on both, and the backbone's weights must match.
+    Library versions within the same backend must match, since they change the features."""
+    current = current or versions()
+    if expected.get('backend', 'mlx') != current['backend']:
+        return {}
+    return {k: (v, current.get(k)) for k, v in expected.items() if k != 'backend' and current.get(k) != v}
+
+
 class DecisionScorer:
-    """Load a trained local decision artifact and its frozen backbone (MLX).
+    """Load a trained local decision artifact and its frozen backbone (MLX or PyTorch).
 
     ``model`` overrides the recorded backbone path when weights have moved; their
     contents must still match. Reuse an instance across requests to load once.
@@ -163,16 +166,13 @@ class DecisionScorer:
         actual = model_identity(model)
         if actual['fingerprint'] != self.manifest['backbone']['fingerprint']:
             raise ValueError('backbone/tokenizer identity differs from the trained artifact')
-        expected_runtime = self.manifest['feature_signature']['runtime']
-        current_runtime = versions()
-        if any(current_runtime.get(k) != v for k, v in expected_runtime.items()):
-            raise ValueError('feature extraction library versions differ from artifact; restore its pinned runtime or regenerate features and retrain')
+        if mismatch := runtime_mismatch(self.manifest['feature_signature']['runtime']):
+            raise ValueError(f'feature extraction library versions differ from artifact {mismatch}; restore its pinned runtime or regenerate features and retrain')
         self.fx = extractor(model, batch_size)
-        from .head import AttentionHead
-        self.head, config = AttentionHead.load(str(Path(artifact)/'head.safetensors'))
+        self.ops = compute.ops()
+        self.head, config = self.ops.AttentionHead.load(str(Path(artifact)/'head.safetensors'))
         if self.head.hidden != self.fx.hidden:
             raise ValueError('head and backbone hidden sizes differ')
-        self.head.eval()
         self.artifact_id = file_digest(Path(artifact)/'manifest.json')
 
     def predict(self, *, state: str | dict | list, question: str,
@@ -194,14 +194,16 @@ class DecisionScorer:
         # Validate before loading the accelerator, including directly constructed
         # dataclasses whose constructors do not enforce the serialized contract.
         task = ChoiceTask.parse(task.to_dict() if isinstance(task, ChoiceTask) else task)
-        import mlx.core as mx
         started = time.perf_counter()
         ctx, opt = extract_task(self.fx, task, self.manifest['limits'])
-        logits = self.head(mx.array(ctx)[None], mx.ones((1, len(ctx))),
-                           mx.array(opt)[None], mx.ones((1, len(opt))))[0]
-        mx.eval(logits)
-        result = choice_result(task, logits.tolist())
+        result = choice_result(task, head_logits(self.head, ctx, opt).tolist())
         result.update(artifact_id=self.artifact_id, seconds=time.perf_counter()-started)
         if self.calibrator is not None:
             result = self.calibrator.apply(result)
         return result
+
+
+def head_logits(head, ctx, opt):
+    """One example's logits (N,) from its cached (Lc, H) context and (N, H) option features."""
+    return compute.ops(head.backend).forward(head, ctx[None], np.ones((1, len(ctx)), np.float32),
+                                            opt[None], np.ones((1, len(opt)), np.float32))[0]
