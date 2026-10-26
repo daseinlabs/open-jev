@@ -46,7 +46,7 @@ Results on PyTorch compared with MLX (PyTorch measured on MPS, which shares the 
 |---|---|---|
 | Cookbook 01 test accuracy, mean of 5 seeds: team / priority | 96.4% / 99.8% | 96.2% / 98.6% |
 | Cookbook 02 MLX-trained model served on each backend: success with no deferral / deferring below 0.7 | 70.0% / 81.5% | 69.5% / 82.0% |
-| Cookbook 02 after `improve`: success with no deferral | 82.5% | 80.5% |
+| Cookbook 02 after `improve` (same SFT model, same seed): closed-window cases solved / success with no deferral | 24/24 / 78.0% | 24/24 / 83.5% |
 
 The PyTorch optimizer reproduces MLX's Adam update (no bias correction), so the learning
 rates in this guide and the cookbooks carry over unchanged.
@@ -145,8 +145,11 @@ heads, mix in the SFT training rows of each kind as an anchor, and write a new m
   every other candidate, and lets the policy finish. The latest decision where an
   alternative earns more reward becomes a label. It finds actions the model currently gives
   ~0 probability. After each iteration, a kind whose validation accuracy drops more than
-  `tolerance` (2 points) below the starting model is rolled back. In cookbook 02 this
-  took never-defer success from 70.0% to 82.5%, and fixed the teacher's blind spot (2/24 → 24/24).
+  `tolerance` (2 points) below the starting model is rolled back. Each update averages
+  over the new labels and 256 anchor rows together, so a handful of labels can't outweigh
+  the anchor and over-generalize. In cookbook 02, across three runs, it fixed the teacher's
+  blind spot every time (24/24 closed-window cases, from 2/24 and 9/24) and took never-defer
+  success from 70–75% to 78–83%. Order accuracy on test can drop a few points; check the report.
 - **`reinforce`** is plain policy gradient. It is cheaper per step, but it only learns about
   actions it happens to sample. In cookbook 02 it never sampled the one action that mattered
   (0.0% probability under the SFT model) and didn't improve.

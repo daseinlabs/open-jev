@@ -172,17 +172,23 @@ class _Trainer:
                 if path.exists():
                     self.anchors[kind] = FeatureSet(str(path))
 
-    def update(self, kind, batch, anchor_size):
+    def update(self, kind, batch, anchor_size, pooled=False):
         """batch: [(ctx, opt, index, weight)]; weight 1 = cross-entropy toward index,
-        an advantage = policy-gradient step."""
+        an advantage = policy-gradient step.
+
+        pooled: average over batch and anchor rows together, so a handful of new labels
+        weigh as many rows rather than as much as the whole anchor. Without it, the
+        batch mean and the anchor mean count equally."""
         ctx, cm = _pad([b[0] for b in batch])
         opt, om = _pad([b[1] for b in batch])
+        anchor = self.anchors.get(kind)
+        m = min(anchor_size, len(anchor)) if anchor is not None else 0
+        n = len(batch)
         terms = [((ctx, cm, opt, om, np.array([b[2] for b in batch], np.int32)),
-                  np.array([b[3] for b in batch], np.float32), 1.0, 0.)]
-        if kind in self.anchors:
-            anchor = self.anchors[kind]
-            indices = self.rng.choice(len(anchor), min(anchor_size, len(anchor)), replace=False).tolist()
-            terms.append((anchor.batch(indices), None, self.anchor_weight, 0.))
+                  np.array([b[3] for b in batch], np.float32), n / (n + m) if pooled else 1.0, 0.)]
+        if m:
+            indices = self.rng.choice(len(anchor), m, replace=False).tolist()
+            terms.append((anchor.batch(indices), None, self.anchor_weight * (m / (n + m) if pooled else 1.0), 0.))
         self.optimizers[kind].step(terms)
 
 
@@ -218,8 +224,8 @@ def _by_kind(samples):
 
 
 def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anchor=True, anchor_weight=1.0,
-            iterations=3, episodes=128, epochs=8, learning_rate=3e-6, minibatch=32, max_reward=None,
-            tolerance=0.02, seed=30_000_000, log=None):
+            iterations=3, episodes=128, steps=64, learning_rate=1e-5, minibatch=32, anchor_size=256,
+            max_reward=None, tolerance=0.02, seed=30_000_000, log=None):
     """Rollout-based policy improvement: learn from reward by trying the alternatives.
 
     Each iteration plays `episodes` greedy episodes. In every episode that did not reach
@@ -228,8 +234,10 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
     and the policy finishes the episode. The latest decision where an alternative earns more
     reward becomes a training label. (Earlier branches replay the same seed, so they can
     "succeed" on information the model could not have had yet.) Labels accumulate across
-    iterations and are trained with cross-entropy, mixed with the SFT training features of
-    the same kind (`anchor`) so behaviour the data already taught is kept.
+    iterations. Each iteration takes `steps` updates per kind: up to `minibatch` labels plus
+    `anchor_size` SFT training rows of the same kind (`anchor`), every row weighted equally.
+    The anchor rows show the contrasting cases (e.g. open return windows), so a correction
+    stays specific to where it applies instead of spreading across similar states.
 
     Guard: after each iteration, a kind whose accuracy on its SFT validation split fell more
     than `tolerance` below the starting model is rolled back. Some failures are hard cases
@@ -270,10 +278,9 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
         kept, rolled_back = [], []
         for kind, samples in _by_kind(labels).items():
             snapshot = _snapshot(policy.heads[kind]['head'])
-            for _ in range(epochs):
-                order = rng.permutation(len(samples))
-                for start in range(0, len(samples), minibatch):
-                    trainer.update(kind, [samples[i] for i in order[start:start + minibatch]], 2 * minibatch)
+            for _ in range(steps):
+                pick = rng.choice(len(samples), min(minibatch, len(samples)), replace=False)
+                trainer.update(kind, [samples[i] for i in pick], anchor_size, pooled=True)
             if kind in validation and _accuracy(policy.heads[kind]['head'], validation[kind]) < floor[kind]:
                 _restore(policy.heads[kind]['head'], snapshot)
                 rolled_back.append(kind)
@@ -284,7 +291,7 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
                           seconds=round(time.perf_counter() - started, 1)))
         log(json.dumps(curve[-1]))
     _save(policy, out, dict(algorithm='rollout_policy_improvement', learning_rate=learning_rate,
-                            iterations=iterations, episodes_per_iteration=episodes, epochs=epochs,
+                            iterations=iterations, episodes_per_iteration=episodes, steps=steps, anchor_size=anchor_size,
                             max_reward=max_reward, tolerance=tolerance, seed=seed, anchor=bool(trainer.anchors),
                             anchor_weight=anchor_weight, curve=curve))
     return dict(model=str(out), curve=curve)

@@ -145,22 +145,29 @@ training label. Labels are trained with cross-entropy, mixed with the SFT rows o
 same kind (the *anchor*), so what the traces already taught is kept.
 
 ```
-{"iteration": 1, "greedy_mean_reward": 0.77, "new_labels": 30, "updated": ["action", "arg.order_id"], "rolled_back": []}
-{"iteration": 2, "greedy_mean_reward": 0.81, "new_labels": 24, "updated": ["arg.order_id"], "rolled_back": ["action"]}
-{"iteration": 3, "greedy_mean_reward": 0.80, "new_labels": 25, "updated": [], "rolled_back": ["action", "arg.order_id"]}
+{"iteration": 1, "greedy_mean_reward": 0.77, "new_labels": 30, "updated": ["action"], "rolled_back": ["arg.order_id"]}
+{"iteration": 2, "greedy_mean_reward": 0.82, "new_labels": 22, "updated": ["action", "arg.order_id"], "rolled_back": []}
+{"iteration": 3, "greedy_mean_reward": 0.85, "new_labels": 17, "updated": ["action"], "rolled_back": ["arg.order_id"]}
 ```
 
-Same 200 evaluation conversations as step 4:
+Same 200 evaluation conversations as step 4. RL was run three times: from the SFT model
+above, and twice (two RL seeds) from a second SFT model trained the same way with newer
+library versions:
 
 | model | never defers | defer below 0.7 (handled) | defer below 0.9 (handled) | closed-window cases solved |
 |---|---:|---:|---:|---:|
 | SFT | 70.0% | 81.5% (90%) | 95.0% (66%) | 2 / 24 |
-| SFT + RL | **82.5%** | **96.5%** (86%) | 100% (65%) | **24 / 24** |
+| SFT + RL | **78.0%** | **98.0%** (81%) | 100% (62%) | **24 / 24** |
+| second SFT | 75.0% | 96.5% (84%) | 100% (62%) | 9 / 24 |
+| second SFT + RL, seed A | **82.5%** | **97.0%** (83%) | 100% (64%) | **24 / 24** |
+| second SFT + RL, seed B | **83.0%** | **97.5%** (83%) | 100% (62%) | **24 / 24** |
 
-Held-out test accuracy is unchanged (tool choice 90.5% → 91.0%, order 88.6% → 88.0%):
-RL fixed the blind spot without trading away what SFT learned.
+Every run fixes the blind spot. Tool-choice test accuracy holds (90.0–90.5%). Order
+accuracy can lose a few points (88.6% → 87.4%; on the second model 90.3% → 84.6% and
+88.0%), because the order head's RL labels are hard cases. Read `rolled_back` and the
+test report, and set that kind's deferral threshold from the refitted calibration.
 
-Three design choices in `improve` matter, and each comes from a failure we hit building this:
+Four design choices in `improve` matter, and each comes from a failure we hit building this:
 
 1. **Try every alternative instead of sampling.** Plain policy gradient (`reinforce`, also
    in the SDK) never improved here. The SFT model gives `transfer_to_human` 0.0%
@@ -173,6 +180,12 @@ Three design choices in `improve` matter, and each comes from a failure we hit b
    head can't fit without forgetting others. Forcing them in dropped order accuracy to 72%.
    After each iteration, a kind whose validation accuracy falls more than 2 points is
    rolled back; that's the `rolled_back` field above.
+4. **Weigh every row the same.** Each update mixes up to 32 labels with 256 anchor rows and
+   averages over all of them. An earlier version averaged the few labels as one term and the
+   anchor as another, so each label counted as much as eight anchor rows. The head then
+   learned "return request → transfer" instead of "closed window → transfer", lost up to 10
+   points of validation accuracy, and the guard rejected the fix in some runs (9/24 solved).
+   Weighted per row, the anchor's open-window examples keep the correction specific.
 
 Calibration is refitted after RL (`--refit`) because the head's probabilities changed.
 

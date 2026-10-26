@@ -189,3 +189,22 @@ class ChatTraceTests(unittest.TestCase):
         order = next(d for e in episodes for d in e.decisions if d.kind == 'arg.order_id')
         self.assertIn('item:', order.candidates[0].text)
         self.assertEqual(build_dataset(aliased, episodes).report['recall_miss_rate']['arg.order_id'], 0.0)
+
+
+class TrainerWeightingTests(unittest.TestCase):
+    def test_pooled_updates_weigh_label_and_anchor_rows_equally(self):
+        import numpy as np
+        from openjev.tod.rl import _Trainer
+        trainer = _Trainer.__new__(_Trainer)
+        trainer.rng, trainer.anchor_weight = np.random.default_rng(0), 1.0
+        ctx, opt = np.zeros((4, 8), np.float16), np.zeros((3, 8), np.float16)
+        anchor = type('Anchor', (), {'__len__': lambda self: 100,
+                                      'batch': lambda self, idx: ('anchor', len(idx))})()
+        trainer.anchors = {'action': anchor}
+        captured = {}
+        trainer.optimizers = {'action': type('Opt', (), {'step': lambda self, terms: captured.update(terms=terms)})()}
+        batch = [(ctx, opt, 1, 1.0)] * 2
+        trainer.update('action', batch, 6, pooled=True)
+        self.assertEqual([t[2] for t in captured['terms']], [2 / 8, 6 / 8])
+        trainer.update('action', batch, 6)
+        self.assertEqual([t[2] for t in captured['terms']], [1.0, 1.0])
