@@ -11,7 +11,7 @@ class MLXDecisionTests(unittest.TestCase):
         import mlx.core as mx
         import mlx.nn as nn
         import numpy as np
-        from openjev.train import loss_fn
+        from openjev.head import _loss
         class FixedHead(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -20,10 +20,10 @@ class MLXDecisionTests(unittest.TestCase):
                 return self.logits
         head = FixedHead()
         mask = mx.array([[1., 1., 0.], [1., 1., 1.]])
-        args = (None, None, None, mask, mx.array([0, 2]))
+        terms = [((None, None, None, mask, mx.array([0, 2])), None, 1.0, 0.7)]
         ce = (np.log(2)+np.log(3))/2
         brier = (0.5+2/3)/2
-        value, grads = nn.value_and_grad(head, lambda h, *xs: loss_fn(h, *xs, brier_weight=0.7))(head, *args)
+        value, grads = nn.value_and_grad(head, _loss)(head, terms)
         self.assertAlmostEqual(value.item(), ce+0.7*brier, places=6)
         self.assertTrue(np.isfinite(np.array(grads['logits'])).all())
         self.assertEqual(float(grads['logits'][0, 2].item()), 0.0)

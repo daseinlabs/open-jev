@@ -273,6 +273,8 @@ def main(argv: list[str] | None = None) -> None:
 
     from .decision_cli import register
     register(sub)
+    from .tod.cli import register as register_tod
+    register_tod(sub)
 
     args = p.parse_args(argv)
     if len(getattr(args, "option", []) or []) == 1:

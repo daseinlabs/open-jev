@@ -24,18 +24,31 @@ class TorchBackend:
             raise ValueError("CUDA is unavailable: install a GPU-enabled PyTorch build and GPU driver")
         if self.device.type == "mps" and not torch.backends.mps.is_available():
             raise ValueError("MPS is unavailable on this machine")
+        # Gemma's activations overflow float16 (NaN hidden states), so use bfloat16 where
+        # the device has it (CUDA from Ampere, MPS) and float32 otherwise (e.g. T4, V100, CPU).
         dtype = torch.float32
         if self.device.type == "cuda":
             with torch.cuda.device(self.device):
-                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
         elif self.device.type == "mps":
-            dtype = torch.float16
+            dtype = torch.bfloat16
         config = AutoConfig.from_pretrained(model_path)
         # Gemma 3 4B checkpoints wrap the language model in a multimodal model.
         # Use its native wrapper so checkpoint names and tied weights load correctly.
         cls = Gemma3ForConditionalGeneration if config.model_type == "gemma3" else AutoModelForCausalLM
         self.model = cls.from_pretrained(model_path, torch_dtype=dtype).to(self.device).eval()
         self.tok = AutoTokenizer.from_pretrained(model_path)
+
+    @property
+    def text_model(self):
+        """The decoder without the LM head (embeddings, layers, final norm)."""
+        inner = self.model.model
+        return getattr(inner, "language_model", inner)
+
+    @property
+    def hidden_size(self):
+        config = self.model.config
+        return getattr(config, "text_config", config).hidden_size
 
     def _tensor(self, ids):
         return self.torch.tensor(ids, dtype=self.torch.long, device=self.device)
@@ -85,3 +98,22 @@ class TorchBackend:
                 target = pred.gather(-1, self._tensor(option)[:, None]).squeeze(-1)
                 scores.append((target - pred.logsumexp(-1)).sum().item())
         return scores
+
+    def features(self, context, options, bos_id, pad_id, batch_size):
+        """Final hidden states: the context's (Lc, H), and each option's mean over its own
+        tokens encoded after BOS alone (N, H); both float16 numpy."""
+        import numpy as np
+        torch = self.torch
+        with torch.inference_mode():
+            ctx = self.text_model(input_ids=self._tensor([context])).last_hidden_state[0]
+            pooled = []
+            for start in range(0, len(options), batch_size):
+                chunk = options[start:start + batch_size]
+                length = max(map(len, chunk))
+                ids = self._tensor([[bos_id] + x + [pad_id] * (length - len(x)) for x in chunk])
+                mask = self._tensor([[1] * (len(x) + 1) + [0] * (length - len(x)) for x in chunk])
+                h = self.text_model(input_ids=ids, attention_mask=mask).last_hidden_state[:, 1:].float()
+                m = mask[:, 1:, None].float()
+                pooled.append(((h * m).sum(1) / m.sum(1)).cpu())
+            return (ctx.float().cpu().numpy().astype(np.float16),
+                    torch.cat(pooled).numpy().astype(np.float16))

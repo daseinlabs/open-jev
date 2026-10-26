@@ -1,8 +1,11 @@
-"""Generic primitives for training task-oriented decision (TOD) models.
+"""Train task-oriented decision (TOD) models: pick one candidate, report confidence, defer.
 
-The user supplies a DecisionSpec (decision kinds and their candidate sources) and an
-extractor that turns their traces into Episodes of spec-built Decisions. The SDK owns
-validation, grouped splits, label-coverage reporting, and confident-or-defer serving.
+You supply a DecisionSpec (decision kinds and how their candidates are enumerated) and an
+adapter that turns your data into Episodes of spec-built Decisions; `chat_traces` derives
+both from OpenAI-style tool-calling logs. The SDK owns validation, grouped splits,
+coverage reporting, training (`openjev tod train`), calibration, confident-or-defer
+serving, and RL in an Environment (`openjev.tod.rl`). Importing this package never loads
+a model or an accelerator.
 """
 from .schema import (SCHEMA_VERSION, Candidate, Choice, Decision, Episode, NoneCorrect, Outcome,
                      Prediction, Preference, Target)

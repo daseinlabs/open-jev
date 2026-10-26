@@ -7,6 +7,8 @@ shuffled-context control stays meaningful. With ``contextual=True`` the options 
 run as continuations of the context via the prefix-shared cache; the pooled vectors then
 already contain the match, which makes the head trivial and the control useless.
 Features are cached to an .npz so head training never touches Gemma again.
+
+Runs on MLX or, through the scorer's PyTorch engine, on CUDA/ROCm/MPS/CPU (independent options only).
 """
 from __future__ import annotations
 
@@ -14,7 +16,6 @@ import json
 import time
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 
 from .scorer import OptionScorer, iter_jsonl
@@ -24,6 +25,13 @@ class FeatureExtractor:
     def __init__(self, scorer: OptionScorer, contextual: bool = False) -> None:
         self.s = scorer
         self.contextual = contextual
+        if scorer.backend == "torch":
+            if contextual:
+                raise ValueError("contextual features need the MLX backend")
+            self.hidden = scorer._engine.hidden_size
+            return
+        global mx
+        import mlx.core as mx
         m = scorer.model
         inner = m.language_model if hasattr(m, "language_model") else m
         self.core = inner.model  # Gemma3Model: embeddings + layers + final norm, no LM head
@@ -33,6 +41,8 @@ class FeatureExtractor:
         """Return (context_h (Lc, H) float16, options_h (N, H) float16)."""
         ctx_ids = self.s.context_ids(context, chat=chat, sep=sep)
         opts = [self.s.option_ids(o) for o in options]
+        if self.s.backend == "torch":
+            return self.s._engine.features(ctx_ids, opts, self.s.bos_id, self.s.pad_id, self.s.batch_size)
         from mlx_lm.models.cache import KVCache
 
         cache = [KVCache() for _ in self.s.model.layers]
@@ -95,7 +105,7 @@ class FeatureSet:
         return len(self.labels)
 
     def batch(self, idx: list[int], shuffle_context: bool = False):
-        """Pad a batch: returns ctx (B, Lc, H), ctx_mask (B, Lc), opt (B, N, H), opt_mask (B, N), labels (B,)."""
+        """Pad a batch as numpy arrays: ctx (B, Lc, H), ctx_mask (B, Lc), opt (B, N, H), opt_mask (B, N), labels (B,)."""
         ctx_src = [self.ctx[i] for i in idx]
         if shuffle_context:  # jevlike's control: every example sees another example's context
             ctx_src = ctx_src[1:] + ctx_src[:1]
@@ -113,4 +123,4 @@ class FeatureSet:
             o = self.opt[i]
             opt[b, : o.shape[0]] = o
             om[b, : o.shape[0]] = 1
-        return (mx.array(ctx), mx.array(cm), mx.array(opt), mx.array(om), mx.array(self.labels[idx]))
+        return ctx, cm, opt, om, self.labels[idx]
