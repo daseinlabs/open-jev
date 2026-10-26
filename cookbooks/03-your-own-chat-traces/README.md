@@ -1,5 +1,7 @@
 # 03 · Your own chat traces
 
+**Run it as a notebook:** [`cookbook.ipynb`](cookbook.ipynb) (outputs included) · [Open in Colab](https://colab.research.google.com/github/daseinlabs/open-jev/blob/main/cookbooks/03-your-own-chat-traces/cookbook.ipynb). The scripts below do the same from a terminal.
+
 **Goal:** run the cookbook 02 pipeline on *your* agent's logs, without writing a spec or
 an adapter by hand. The SDK derives both from your tool schemas.
 
