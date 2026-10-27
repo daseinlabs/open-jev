@@ -1,0 +1,31 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an analytics assistant for a shop. Use run_sql to query the SQLite database, then answer the question with the number or name."
+    },
+    {
+      "role": "user",
+      "content": "What is the average order value for South customers?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "type": "function",
+          "function": {
+            "name": "run_sql",
+            "arguments": "{\"sql\": \"SELECT name FROM sqlite_master WHERE type = 'table'\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_0",
+      "content": "{\"columns\": [\"name\"], \"rows\": [[\"customers\"], [\"orders\"], [\"products\"], [\"order_items\"], [\"refunds\"]], \"row_count\": 5}"
+    }
+  ]
+}
