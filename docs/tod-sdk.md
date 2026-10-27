@@ -155,6 +155,10 @@ episodes, coverage = episodes_from_traces(traces, spec)
 - `arg.<param>` for ID parameters you list in `id_params` (candidates are the values seen
   earlier in the conversation under that key or its aliases).
 - Free-text parameters are not decisions. `coverage` counts them as `free_text_left_to_parent`.
+- `tables.<param>` for SQL parameters you list in `sql_params` with your database schema
+  (`schema_from_sqlite`, or `{table: {columns, references}}`): which tables the next query
+  needs, among table sets joinable through foreign keys, labelled by parsing the logged SQL.
+  The SQL itself stays with your LLM. See [cookbook 04](https://github.com/daseinlabs/open-jev/tree/main/cookbooks/04-sql-assistant).
 
 ## Confidence and deferral
 
@@ -202,3 +206,4 @@ informed one.
 - [`cookbooks/01-ticket-routing`](https://github.com/daseinlabs/open-jev/tree/main/cookbooks/01-ticket-routing): labelled CSV to a routing model in about 10 minutes.
 - [`cookbooks/02-shopdesk-traces-to-rl`](https://github.com/daseinlabs/open-jev/tree/main/cookbooks/02-shopdesk-traces-to-rl): chat traces to dataset to SFT to RL in a simulated support desk.
 - [`cookbooks/03-your-own-chat-traces`](https://github.com/daseinlabs/open-jev/tree/main/cookbooks/03-your-own-chat-traces): the same pipeline on your logs, with the spec derived from your tool schemas.
+- [`cookbooks/04-sql-assistant`](https://github.com/daseinlabs/open-jev/tree/main/cookbooks/04-sql-assistant): a chat assistant that writes SQL; the model decides when to query and which tables, from your logs and schema.

@@ -8,6 +8,7 @@ whole `openjev.tod` workflow, from raw data to a model that knows when to defer.
 | [01-ticket-routing](01-ticket-routing/) ([notebook](01-ticket-routing/cookbook.ipynb)) | The core loop: labelled records → `DecisionSpec` → dataset → `openjev tod train` → confident-or-defer serving. | ~10 min |
 | [02-shopdesk-traces-to-rl](02-shopdesk-traces-to-rl/) ([notebook](02-shopdesk-traces-to-rl/cookbook.ipynb)) | The full spectrum on a simulated support desk: chat traces → decision dataset → supervised fine-tuning → evaluation with deferral → RL that fixes a mistake your traces can't teach. | ~45 min |
 | [03-your-own-chat-traces](03-your-own-chat-traces/) ([notebook](03-your-own-chat-traces/cookbook.ipynb)) | Running the same pipeline on your own OpenAI-style tool-calling logs, with the spec derived from your tool schemas. | depends on your data |
+| [04-sql-assistant](04-sql-assistant/) ([notebook](04-sql-assistant/cookbook.ipynb)) | A chat assistant that writes SQL: the model decides when to query or answer, and which tables each query needs; your LLM writes the SQL. Labels come from your logs plus the database schema. | ~20 min |
 
 ## Setup (once)
 
