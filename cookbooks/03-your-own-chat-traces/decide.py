@@ -8,11 +8,11 @@ import sys
 from pathlib import Path
 
 from openjev.tod.chat_traces import ChatTraceSpec
-from openjev.tod.rl import HeadPolicy
+from openjev.tod.rl import load_policy
 
 run, conversation = Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text())
 spec = ChatTraceSpec.load(run/'spec.json')
-policy = HeadPolicy(run/'model', spec)  # refuses a model trained with a different spec
+policy = load_policy(run/'model', spec)  # refuses a model trained with a different spec
 state = spec.state(conversation['messages'] if isinstance(conversation, dict) else conversation)
 p = policy.decide(state, 'action', threshold=0.8)
 print(json.dumps(dict(next=p.choice_id, confidence=round(p.confidence, 3), defer=p.defer,

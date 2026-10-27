@@ -41,7 +41,8 @@ class Environment(Protocol):
 @dataclass
 class Rollout:
     reward: float
-    steps: list = field(default_factory=list)  # (ctx, opt, chosen index) for each decision the model made
+    steps: list = field(default_factory=list)  # (sample, _, chosen index) per decision the model made; the sample is
+    # what the policy trains on: (ctx, opt) features for heads, the Decision itself for TOD
     decisions: list = field(default_factory=list)  # the Decision behind each step
     actions: list = field(default_factory=list)  # every payload sent to env.act, in order (for replay)
     decided: int = 0
@@ -83,6 +84,28 @@ class HeadPolicy:
             if calibrated and (artifact/'calibrator.json').exists():
                 temperature = TemperatureCalibrator.load(artifact/'calibrator.json', artifact_id).metadata['temperature']
             self.heads[kind] = dict(head=head, temperature=temperature, artifact_id=artifact_id)
+
+    # RL hooks (improve / reinforce). Each kind has its own head; TOD shares one adapter.
+    shared_weights = False
+    rl_defaults = dict(steps=64, learning_rate=1e-5, minibatch=32, anchor_size=256)
+
+    def trainer(self, anchor, anchor_weight, learning_rate, rng):
+        return _Trainer(self, anchor, anchor_weight, learning_rate, rng)
+
+    def validation_accuracy(self, kinds):
+        """{kind: accuracy on its SFT validation split} for kinds that have one (the RL guard)."""
+        if not hasattr(self, '_validation'):
+            self._validation = _validation_sets(self)
+        return {k: _accuracy(self.heads[k]['head'], self._validation[k]) for k in kinds if k in self._validation}
+
+    def snapshot(self, kind):
+        return _snapshot(self.heads[kind]['head'])
+
+    def restore(self, kind, state):
+        _restore(self.heads[kind]['head'], state)
+
+    def save(self, out, info):
+        _save(self, out, info)
 
     def logits(self, decision):
         from ..decision_mlx import extract_task, head_logits
@@ -145,6 +168,12 @@ class HeadPolicy:
         return dict(mean_reward=float(np.mean([r.reward for r in runs])),
                     decisions_handled=decided / max(1, decided + sum(r.deferred for r in runs)),
                     fully_autonomous=float(np.mean([r.deferred == 0 for r in runs])), episodes=len(runs))
+
+
+def load_policy(model, spec, **kwargs):
+    """HeadPolicy for a head model, TOD policy for a model from `openjev tod train --method tod`."""
+    from .picker import is_tod_model, policy
+    return policy(model, spec, **kwargs) if is_tod_model(model) else HeadPolicy(model, spec, **kwargs)
 
 
 def _pad(arrays):
@@ -224,7 +253,7 @@ def _by_kind(samples):
 
 
 def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anchor=True, anchor_weight=1.0,
-            iterations=3, episodes=128, steps=64, learning_rate=1e-5, minibatch=32, anchor_size=256,
+            iterations=3, episodes=128, steps=None, learning_rate=None, minibatch=None, anchor_size=None,
             max_reward=None, tolerance=0.02, seed=30_000_000, log=None):
     """Rollout-based policy improvement: learn from reward by trying the alternatives.
 
@@ -239,9 +268,13 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
     The anchor rows show the contrasting cases (e.g. open return windows), so a correction
     stays specific to where it applies instead of spreading across similar states.
 
-    Guard: after each iteration, a kind whose accuracy on its SFT validation split fell more
-    than `tolerance` below the starting model is rolled back. Some failures are hard cases
-    the head cannot fit without forgetting others; RL keeps only what it can learn safely.
+    Guard: after training each kind, if its accuracy on its SFT validation split (every
+    kind's, when kinds share weights as in TOD) fell more than `tolerance` below the starting
+    model, that update is rolled back. Some failures are hard cases the model cannot fit
+    without forgetting others; RL keeps only what it can learn safely.
+
+    `steps`, `learning_rate`, `minibatch` and `anchor_size` default to `policy.rl_defaults`
+    (smaller for TOD, where every row is a 12B forward and backward pass).
 
     Unlike REINFORCE this tries every option at the decisions that went wrong, so it finds
     actions the policy gives ~0 probability. It needs `reset(seed)` to be deterministic.
@@ -250,10 +283,13 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
     out = Path(out)
     if out.exists():
         raise ValueError(f'{out} already exists')
+    settings = dict(policy.rl_defaults)
+    settings.update({k: v for k, v in dict(steps=steps, learning_rate=learning_rate, minibatch=minibatch,
+                                            anchor_size=anchor_size).items() if v is not None})
+    steps, learning_rate, minibatch, anchor_size = (settings[k] for k in ('steps', 'learning_rate', 'minibatch', 'anchor_size'))
     rng = np.random.default_rng(seed)
-    trainer = _Trainer(policy, anchor, anchor_weight, learning_rate, rng)
-    validation = _validation_sets(policy)
-    floor = {k: _accuracy(policy.heads[k]['head'], v) - tolerance for k, v in validation.items()}
+    trainer = policy.trainer(anchor, anchor_weight, learning_rate, rng)
+    floor = {k: v - tolerance for k, v in policy.validation_accuracy(list(policy.heads)).items()}
     labels, curve = [], []
     for iteration in range(1, iterations + 1):
         started = time.perf_counter()
@@ -264,7 +300,7 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
             if max_reward is not None and run.reward >= max_reward:
                 continue
             for i in reversed(range(len(run.steps))):
-                (ctx, opt, chosen), decision = run.steps[i], run.decisions[i]
+                (a, b, chosen), decision = run.steps[i], run.decisions[i]
                 best, best_reward = chosen, run.reward
                 for alt, candidate in enumerate(decision.candidates):
                     if alt != chosen:
@@ -272,17 +308,18 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
                         if reward > best_reward:
                             best, best_reward = alt, reward
                 if best != chosen:
-                    labels.append((decision.kind, (ctx, opt, best, 1.0)))
+                    labels.append((decision.kind, (a, b, best, 1.0)))
                     found += 1
                     break
         kept, rolled_back = [], []
         for kind, samples in _by_kind(labels).items():
-            snapshot = _snapshot(policy.heads[kind]['head'])
+            snapshot = policy.snapshot(kind)
             for _ in range(steps):
                 pick = rng.choice(len(samples), min(minibatch, len(samples)), replace=False)
                 trainer.update(kind, [samples[i] for i in pick], anchor_size, pooled=True)
-            if kind in validation and _accuracy(policy.heads[kind]['head'], validation[kind]) < floor[kind]:
-                _restore(policy.heads[kind]['head'], snapshot)
+            accuracy = policy.validation_accuracy(list(floor) if policy.shared_weights else [kind])
+            if any(accuracy[k] < floor[k] for k in accuracy):
+                policy.restore(kind, snapshot)
                 rolled_back.append(kind)
             else:
                 kept.append(kind)
@@ -290,7 +327,7 @@ def improve(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, anc
                           new_labels=found, total_labels=len(labels), updated=kept, rolled_back=rolled_back,
                           seconds=round(time.perf_counter() - started, 1)))
         log(json.dumps(curve[-1]))
-    _save(policy, out, dict(algorithm='rollout_policy_improvement', learning_rate=learning_rate,
+    policy.save(out, dict(algorithm='rollout_policy_improvement', learning_rate=learning_rate,
                             iterations=iterations, episodes_per_iteration=episodes, steps=steps, anchor_size=anchor_size,
                             max_reward=max_reward, tolerance=tolerance, seed=seed, anchor=bool(trainer.anchors),
                             anchor_weight=anchor_weight, curve=curve))
@@ -312,7 +349,7 @@ def reinforce(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, a
     if any(entry['temperature'] != 1.0 for entry in policy.heads.values()):
         raise ValueError('sample from the raw heads: use HeadPolicy(..., calibrated=False) for RL')
     rng = np.random.default_rng(seed)
-    trainer = _Trainer(policy, anchor, anchor_weight, learning_rate, rng)
+    trainer = policy.trainer(anchor, anchor_weight, learning_rate, rng)
     curve = []
     for iteration in range(1, iterations + 1):
         started = time.perf_counter()
@@ -320,8 +357,8 @@ def reinforce(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, a
         runs = [policy.rollout(make_env(), int(s), rng=rng) for s in seeds]
         rewards = np.array([r.reward for r in runs])
         advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
-        samples = [(d.kind, (ctx, opt, index, float(a)))
-                   for r, a in zip(runs, advantages) for (ctx, opt, index), d in zip(r.steps, r.decisions)]
+        samples = [(d.kind, (x, y, index, float(a)))
+                   for r, a in zip(runs, advantages) for (x, y, index), d in zip(r.steps, r.decisions)]
         for kind, group in _by_kind(samples).items():
             order = rng.permutation(len(group))
             for start in range(0, len(group), minibatch):
@@ -329,7 +366,7 @@ def reinforce(policy: HeadPolicy, make_env: Callable[[], Environment], out, *, a
         curve.append(dict(iteration=iteration, mean_reward=float(rewards.mean()), decisions=len(samples),
                           seconds=round(time.perf_counter() - started, 1)))
         log(json.dumps(curve[-1]))
-    _save(policy, out, dict(algorithm='reinforce_normalized_baseline', learning_rate=learning_rate,
+    policy.save(out, dict(algorithm='reinforce_normalized_baseline', learning_rate=learning_rate,
                             iterations=iterations, episodes_per_iteration=episodes, seed=seed,
                             anchor=bool(trainer.anchors), anchor_weight=anchor_weight, curve=curve))
     return dict(model=str(out), curve=curve)

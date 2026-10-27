@@ -63,6 +63,27 @@ tickets are kept once, so the same text can't sit in both train and test.
 
 ## 2. Train
 
+Pick a method. Everything after this step is the same for both.
+
+**Fine-tune TOD** (NVIDIA GPU with 40 GB+, or a 64 GB Apple silicon Mac):
+
+```bash
+openjev tod train runs/tickets --method tod --out runs/tickets-model
+```
+
+This continues training [TOD](https://huggingface.co/parsecai/tod)'s adapter on your tickets,
+keeps the best checkpoint on validation, fits a temperature per kind, and reports test
+accuracy next to zero-shot TOD:
+
+| test accuracy | zero-shot TOD | fine-tuned TOD |
+|---|---:|---:|
+| team | 84.2% | **97.0%** |
+| priority | 66.3% | **100%** |
+
+About 55 minutes on an M5 Pro (MPS, 2 epochs over 1,434 rows); much faster on an A100/H100.
+
+**Or train small heads on a frozen Gemma 3 4B** (any ~9 GB GPU, or any Apple silicon Mac):
+
 ```bash
 openjev tod train runs/tickets --out runs/tickets-model
 ```
@@ -106,7 +127,7 @@ priority  -> normal     confidence 1.00
 ```
 
 ```python
-policy = HeadPolicy('runs/tickets-model', SPEC)   # refuses a model trained with another spec
+policy = load_policy('runs/tickets-model', SPEC)   # refuses a model trained with another spec
 p = policy.decide(state, 'team', threshold=0.8)
 if p.defer:
     ...                                            # hand to a person or a bigger model

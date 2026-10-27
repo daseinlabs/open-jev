@@ -12,11 +12,17 @@ option scores gives a probability per option, like `jevlike-predict`.
 
 ## Train a decision model on your own data
 
-`openjev.tod` trains small task-oriented decision models: a frozen Gemma backbone plus a
-~2M-parameter head that picks one option from a list your code supplies (which tool,
-which order, which team), reports a calibrated confidence, and defers to a bigger model
-when unsure. Runs on NVIDIA/AMD GPUs (PyTorch) and Apple silicon (MLX). Install with
-`pip install openjev-sdk`.
+`openjev.tod` fine-tunes task-oriented decision models on your data. A decision model picks
+one option from a list your code supplies (which tool, which order, which team), reports a
+calibrated confidence, and defers to a bigger model when unsure. Two methods:
+
+- `--method tod` fine-tunes [TOD](https://huggingface.co/parsecai/tod) (Gemma 4 12B + LoRA) on an
+  NVIDIA GPU with 40 GB+ (PyTorch). On cookbook 01 it takes TOD from 84.2% / 66.3% zero-shot to
+  97.0% / 100% (team / priority).
+- `--method head` (default) trains small heads on a frozen Gemma 3 4B: ~9 GB GPU (PyTorch) or
+  any Apple silicon Mac (MLX).
+
+Install with `pip install openjev-sdk`.
 
 ```python
 from openjev.tod import Candidate, DecisionSpec, Episode, Kind, build_dataset
@@ -30,7 +36,7 @@ build_dataset(spec, episodes).write('runs/routing')
 ```
 
 ```bash
-openjev tod train runs/routing --out runs/routing-model   # fetches the backbone from parsecai/gemma-3-4b-it on first use
+openjev tod train runs/routing --method tod --out runs/routing-model   # fine-tune TOD (fetched on first use)
 ```
 
 Chat traces, RL in a simulator, and deriving the spec from your tool schemas are covered in

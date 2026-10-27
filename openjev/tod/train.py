@@ -82,7 +82,10 @@ def raw_result(head, fx, limits, artifact_id, task):
 def evaluate_dataset(model, dataset, refit=False):
     """Per kind: fit (or reuse) a temperature on calibration, then score test."""
     from ..decision_probability import TemperatureCalibrator
+    from .picker import evaluate, is_tod_model
     from .rl import HeadPolicy
+    if is_tod_model(model):
+        return evaluate(model, dataset, refit)
     model, dataset = Path(model), Path(dataset)
     if artifact_spec(model) != dataset_spec(dataset):
         raise ValueError('model and dataset were built with different DecisionSpecs')

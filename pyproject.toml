@@ -1,7 +1,7 @@
 [project]
 name = "openjev-sdk"
-version = "0.2.1"
-description = "Train small task-oriented decision models on your own traces: pick, calibrate, defer, and improve with RL"
+version = "0.3.0"
+description = "Fine-tune the TOD decision model (or small heads on Gemma) on your own traces: pick, calibrate, defer, and improve with RL"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -24,6 +24,7 @@ dependencies = [
     "mlx-lm>=0.24; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "torch>=2.6; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "numpy>=2.5.3",
+    "peft>=0.17",
     "safetensors>=0.8.0",
     "transformers>=5.17.0",
     "uvicorn[standard]>=0.53.0",
