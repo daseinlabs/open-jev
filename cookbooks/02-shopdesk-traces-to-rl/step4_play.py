@@ -7,7 +7,7 @@ import random
 import sys
 
 from openjev.tod.envs.shopdesk import ShopDesk, teacher
-from openjev.tod.rl import HeadPolicy
+from openjev.tod.rl import load_policy
 
 from adapter import SPEC
 
@@ -22,7 +22,7 @@ def teacher_success(seed):
     return desk.success
 
 
-policy = HeadPolicy(artifact, SPEC)
+policy = load_policy(artifact, SPEC)
 report = {'teacher': sum(map(teacher_success, seeds)) / len(seeds)}
 for threshold in (None, 0.7, 0.9):
     report[f'model@{threshold}'] = policy.evaluate(ShopDesk, seeds, threshold=threshold)

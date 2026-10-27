@@ -11,7 +11,7 @@ About 45 minutes on an M-series Mac, mostly Gemma reading text.
 ```
 step1  traces.jsonl          an imperfect agent's chat logs (OpenAI format, with outcomes)
 step2  dataset/              adapter.py cuts each conversation into decisions
-step3  sft/                  openjev tod train: features, head, calibration, test metrics
+step3  sft/                  openjev tod train: fine-tune TOD (or heads), calibration, test metrics
 step4  (report)              the model runs fresh conversations, with and without deferral
 step5  rl/                   improve: learn from reward in the simulator, starting from the SFT model
 ```
@@ -85,8 +85,13 @@ and order the agent used was among the candidates. On real data, check it first.
 ## Step 3 · Supervised fine-tuning
 
 ```bash
-openjev tod train runs/shopdesk/dataset --out runs/shopdesk/sft
+openjev tod train runs/shopdesk/dataset --method tod --out runs/shopdesk/sft   # fine-tune TOD (40 GB+ GPU)
+openjev tod train runs/shopdesk/dataset --out runs/shopdesk/sft                # or heads on Gemma 3 4B (~9 GB)
 ```
+
+The numbers below are from the `head` method. Steps 4 and 5 work the same for both:
+`load_policy` picks the right model type, and `improve` updates TOD's shared adapter (with
+smaller default batches, since every row is a 12B pass) or the per-kind heads.
 
 One head per kind, measured on a held-out test split (calibrated):
 
@@ -104,7 +109,7 @@ deferral threshold in step 4 would be guesswork.
 python step4_play.py runs/shopdesk/sft
 ```
 
-The model now *is* the agent: `HeadPolicy.rollout` asks the environment for the next
+The model now *is* the agent: `policy.rollout` asks the environment for the next
 decision, builds it through `SPEC`, and executes the chosen payload. With a threshold,
 low-confidence decisions go to the parent (an oracle here; your big model in production).
 

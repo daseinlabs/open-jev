@@ -1,10 +1,19 @@
 # Decision-model training SDK (`openjev.tod`)
 
-`openjev.tod` trains small **task-oriented decision (TOD)** models: a frozen Gemma
-backbone plus a ~2M-parameter head that picks one option from a list your code
-supplies, says how confident it is, and defers when it isn't sure. It sits in
-front of a large model (or a person) and takes the bounded, repetitive decisions:
-which tool to call, which order an action applies to, which team gets a ticket.
+`openjev.tod` fine-tunes **task-oriented decision (TOD)** models on your data. A decision
+model picks one option from a list your code supplies, says how confident it is, and
+defers when it isn't sure. It sits in front of a large model (or a person) and takes the
+bounded, repetitive decisions: which tool to call, which order an action applies to,
+which team gets a ticket.
+
+Two ways to train, with the same data, calibration, serving and RL:
+
+| `--method` | What trains | Hardware |
+|---|---|---|
+| `tod` | The [TOD picker](https://huggingface.co/parsecai/tod) (Gemma 4 12B + LoRA): its stage-2 LoRA keeps training on your decisions | NVIDIA GPU with 40 GB+ (A100, H100, L40S, A6000), PyTorch. Also runs on a 64 GB Apple silicon Mac (MPS), slower |
+| `head` (default) | A ~2M-parameter head per decision kind on a frozen Gemma 3 4B | ~9 GB GPU (PyTorch) or any Apple silicon Mac (MLX) |
+
+See [Fine-tuning TOD](#fine-tuning-tod).
 
 It does not write free text. Anything that needs generation stays with the parent.
 
@@ -51,6 +60,34 @@ Results on PyTorch compared with MLX (PyTorch measured on MPS, which shares the 
 The PyTorch optimizer reproduces MLX's Adam update (no bias correction), so the learning
 rates in this guide and the cookbooks carry over unchanged.
 
+## Fine-tuning TOD
+
+```bash
+openjev tod train runs/my-dataset --method tod --out runs/my-tod
+```
+
+TOD reads a decision as a lettered multiple-choice prompt and scores the answer letters.
+With up to 16 options, that letter read is TOD's whole answer (its stage-1 shortlist keeps
+every option), so fine-tuning continues training the stage-2 LoRA (rank 16 on q/k/v/o,
+21M parameters) with cross-entropy over the letters, the way TOD was trained. The SDK
+renders exactly TOD's prompt (byte-identical to `daseinlabs/tod`, checked in the tests), and
+its zero-shot letter logits match TOD's own scorer exactly.
+
+- **One adapter for all kinds.** TOD is a general picker; the question text tells kinds
+  apart. The checkpoint with the best validation accuracy is kept, including the starting
+  adapter if fine-tuning doesn't beat it.
+- **Calibration per kind**, fitted on the calibration split, as for heads.
+- **The report includes zero-shot TOD** on the same test split, so you see what fine-tuning bought.
+- **Downloads:** `parsecai/tod` (0.1 GB adapter) and `google/gemma-4-12B-it` (24 GB,
+  Apache-2.0, not gated) on first use.
+- **Limits:** up to 26 candidates per decision; text states (TOD's image path isn't wired in yet).
+- **Defaults:** 2 epochs, learning rate 2e-5, gradient accumulation 8, LoRA in float32 on a
+  bfloat16 base, gradient checkpointing. `--max-train N` trains on a random subset.
+
+`load_policy(model, spec)` returns the right policy for either method, with `decide`,
+`rollout`, `evaluate`, and RL (`improve`, `reinforce`). On TOD, RL updates the shared
+adapter, and the rollback guard checks every kind after each update.
+
 ## The pipeline
 
 ```
@@ -67,7 +104,7 @@ your data ──adapter──▶ Decisions ──build_dataset──▶ dataset 
 3. **Train.** `openjev tod train DATASET --out MODEL` trains **one head per decision kind**
    on a shared frozen backbone. Per kind it caches features, trains, fits a temperature on
    the calibration split, and reports test accuracy. The model records the spec's fingerprint.
-4. **Serve.** `HeadPolicy(MODEL, spec).decide(state, kind, threshold)` returns a
+4. **Serve.** `load_policy(MODEL, spec).decide(state, kind, threshold)` returns a
    `Prediction`: execute its payload when confident, defer otherwise.
 5. **RL (optional).** With an environment that gives a reward, `improve` teaches the model
    what your data never showed.
@@ -85,7 +122,7 @@ your data ──adapter──▶ Decisions ──build_dataset──▶ dataset 
 | `Dataset` | Output of `build_dataset`; `write(dir)` produces the directory `openjev tod train` reads. |
 | `Prediction` | `choice_id`, `confidence`, `probabilities`, `defer`, `reason`, `payload`. |
 | `Environment` | `reset(seed)`, `observe() -> (kind, state) or None`, `act(payload)`, `defer()`, `reward()`. Anything that can replay your product's decisions. |
-| `HeadPolicy(model, spec)` | A trained model acting through a spec: `decide`, `rollout`, `evaluate`. Refuses a model trained with a different spec. Kinds without a trained head always defer. |
+| `load_policy(model, spec)` | A trained model (TOD or heads) acting through a spec: `decide`, `rollout`, `evaluate`. Refuses a model trained with a different spec. Kinds without a trained head always defer. |
 
 ## Labelling from what actually happened
 

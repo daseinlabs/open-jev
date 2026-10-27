@@ -5,9 +5,9 @@ decision, tries the other candidates, and lets the model finish. Choices that tu
 failure into a success become new training labels. The SFT training features act as an
 anchor (on by default), so behaviour the traces already taught well is kept. Only the head learns."""
 from openjev.tod.envs.shopdesk import ShopDesk
-from openjev.tod.rl import HeadPolicy, improve
+from openjev.tod.rl import improve, load_policy
 
 from adapter import SPEC
 
-policy = HeadPolicy('runs/shopdesk/sft', SPEC)
+policy = load_policy('runs/shopdesk/sft', SPEC)
 improve(policy, ShopDesk, 'runs/shopdesk/rl', max_reward=1.0)  # 3 iterations x 128 conversations

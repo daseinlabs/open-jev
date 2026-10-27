@@ -73,10 +73,11 @@ On the ShopDesk traces (1,500 conversations), the coverage report (counted acros
 ## 2. Train
 
 ```bash
-openjev tod train runs/mine/dataset --out runs/mine/model
+openjev tod train runs/mine/dataset --method tod --out runs/mine/model   # fine-tune TOD (40 GB+ GPU)
+openjev tod train runs/mine/dataset --out runs/mine/model                # or heads on Gemma 3 4B (~9 GB)
 ```
 
-Same four stages as cookbook 01, with one head per kind. On the ShopDesk traces:
+Same stages as cookbook 01. On the ShopDesk traces, with the `head` method:
 
 ```json
 "action":       {"accuracy": 0.942, "mean_confidence": 0.93, "n": 326},
