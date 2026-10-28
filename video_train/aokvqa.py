@@ -101,11 +101,11 @@ def run(args):
         images, Image = _images()
     enc = Gemma4Inputs(CONFIG)
     model = mm.load_model(local_model(args.model))
-    scope = contextlib.nullcontext()
+    scope = contextlib.nullcontext  # a factory: a @contextmanager scope can be entered only once
     if args.adapter:  # forced on: in serving, image requests never use the video adapter
         from .adapters import adapter_scope, install_adapter
         install_adapter(model, "video", args.adapter)
-        scope = adapter_scope("video")
+        scope = lambda: adapter_scope("video")
     for i, q in enumerate(todo):
         t0 = time.perf_counter()
         img = Image.open(io.BytesIO(images[q["question_id"]]["bytes"])).convert("RGB")
@@ -113,7 +113,7 @@ def run(args):
                                                        criteria=dict(zip(LETTERS, q["options"]))))
         e = enc.encode(prompt, [img], "images", args.soft_tokens)
         t1 = time.perf_counter()
-        with scope:
+        with scope():
             feats = mm.vision_features(model, e.pixel_values, e.position_ids)
             p = mx.softmax(mm.letter_logits(model, e.input_ids, feats, "images", enc.letter_ids(len(q["options"]))))
             p = np.array(p).astype(float)
