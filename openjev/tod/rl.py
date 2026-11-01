@@ -10,6 +10,8 @@ Any simulator, replay harness, or sandboxed copy of your product can be an Envir
 
 Candidates come from the DecisionSpec, exactly as in training. The backbone stays frozen;
 `improve` and `reinforce` update only the per-kind heads and write a new model directory.
+`load_policy` serves every model type; encoder models (`--method encoder`) also serve Subset
+kinds and pack many decisions per forward with `decide_many`.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ import numpy as np
 from .. import compute
 from ..decision import file_digest, read_artifact
 from .schema import Prediction
-from .spec import DecisionSpec
+from .spec import DecisionSpec, load_spec
 from .train import BINDING, bind_spec, read_binding
 
 
@@ -170,9 +172,19 @@ class HeadPolicy:
                     fully_autonomous=float(np.mean([r.deferred == 0 for r in runs])), episodes=len(runs))
 
 
-def load_policy(model, spec, **kwargs):
-    """HeadPolicy for a head model, TOD policy for a model from `openjev tod train --method tod`."""
+def load_policy(model, spec: DecisionSpec | None = None, **kwargs):
+    """The policy for any model `openjev tod train` wrote: heads, TOD (`--method tod`), or an
+    encoder (`--method encoder`, which also takes device='cpu'|'cuda'). Without `spec`, the
+    model's own `spec.json` is used (written when the dataset's spec could describe itself)."""
+    from .encoder import is_encoder_model, policy as encoder_policy
     from .picker import is_tod_model, policy
+    if spec is None:
+        path = Path(model)/'spec.json'
+        if not path.exists():
+            raise ValueError(f'{model} has no spec.json (its spec is defined in code); pass spec')
+        spec = load_spec(path)
+    if is_encoder_model(model):
+        return encoder_policy(model, spec, **kwargs)
     return policy(model, spec, **kwargs) if is_tod_model(model) else HeadPolicy(model, spec, **kwargs)
 
 

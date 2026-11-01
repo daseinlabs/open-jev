@@ -1,7 +1,8 @@
 """Decision data contract (schema v2). Pure Python; safe to import without a backend.
 
 A Decision is one pick: a state, a typed kind, the candidates the spec enumerated for
-that state, and an optional supervision target. Rows stay flat; earlier picks in a
+that state, and an optional supervision target (one candidate, or with `Subset` any set of
+them, e.g. the passages worth keeping). Rows stay flat; earlier picks in a
 turn belong in the next row's state, and episodes only group rows for splitting.
 """
 from __future__ import annotations
@@ -48,18 +49,33 @@ class Outcome:
 
 
 @dataclass(frozen=True)
+class Subset:
+    """Every candidate in `ids` is right and every other one is wrong; `ids` may be empty."""
+    ids: tuple[str, ...]
+
+    def __post_init__(self):
+        if isinstance(self.ids, str) or not all(isinstance(i, str) for i in self.ids):
+            raise ValueError('subset ids must be a list of candidate ids')
+        if len(set(self.ids)) != len(self.ids):
+            raise ValueError('subset ids must be unique')
+        object.__setattr__(self, 'ids', tuple(self.ids))
+
+
+@dataclass(frozen=True)
 class NoneCorrect:
     """The taken action was not among the enumerated candidates (a recall miss, kept visible)."""
     note: str = ''
 
 
-Target = Choice | Preference | Outcome | NoneCorrect
-_TARGETS = {'choice': Choice, 'preference': Preference, 'outcome': Outcome, 'none_correct': NoneCorrect}
+Target = Choice | Subset | Preference | Outcome | NoneCorrect
+_TARGETS = {'choice': Choice, 'subset': Subset, 'preference': Preference, 'outcome': Outcome,
+            'none_correct': NoneCorrect}
 _TAGS = {v: k for k, v in _TARGETS.items()}
 
 
 def target_to_dict(target):
-    return {'type': _TAGS[type(target)], **target.__dict__}
+    return {'type': _TAGS[type(target)], **{k: list(v) if isinstance(v, tuple) else v
+                                            for k, v in target.__dict__.items()}}
 
 
 def parse_target(value, ids):
@@ -72,6 +88,8 @@ def parse_target(value, ids):
     for name in referenced:
         if getattr(target, name) not in ids:
             raise ValueError(f'target {name} is not in candidates')
+    if isinstance(target, Subset) and not set(target.ids) <= set(ids):
+        raise ValueError('target ids are not all in candidates')
     if isinstance(target, Preference) and target.better == target.worse:
         raise ValueError('preference needs two different candidates')
     if isinstance(target, Outcome) and not math.isfinite(target.reward):
@@ -168,6 +186,11 @@ class Prediction:
     defer: bool
     reason: str | None = None  # 'low_confidence' | 'mandatory'
     payload: object = None
+    # Subset kinds: the candidates to keep (choice_id is then the most probable one), and the
+    # operating point that chose them, e.g. 'rho_99'.
+    keep: tuple[str, ...] | None = None
+    keep_payloads: tuple | None = None
+    point: str | None = None
 
     @property
     def execute(self):
@@ -175,6 +198,6 @@ class Prediction:
         return not self.defer
 
 
-__all__ = ['SCHEMA_VERSION', 'Candidate', 'Choice', 'Preference', 'Outcome',
+__all__ = ['SCHEMA_VERSION', 'Candidate', 'Choice', 'Subset', 'Preference', 'Outcome',
            'NoneCorrect', 'Target', 'Decision', 'Episode', 'Prediction', 'parse_target',
            'target_to_dict']

@@ -9,6 +9,7 @@ fit a temperature on calibration, and report accuracy on test.
 Model layout:
 
     model/tod.json               spec fingerprint, dataset, trained kinds
+    model/spec.json              the spec itself, when the dataset carried one
     model/heads/<kind>/          a standard decision artifact (+ calibrator.json)
     model/evaluation.json        per-kind test report
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 from ..decision import canonical, choice_result, file_digest
 from .schema import Choice
@@ -33,8 +35,12 @@ def dataset_spec(dataset):
 
 
 def bind_spec(model, spec_fingerprint, **extra):
-    """Record which DecisionSpec built the model's training data."""
+    """Record which DecisionSpec built the model's training data, and copy the spec itself
+    (`spec.json`) from the dataset when it has one, so the model serves without the code."""
     (Path(model)/BINDING).write_text(json.dumps(dict(spec=spec_fingerprint, **extra), indent=2) + '\n')
+    source = Path(extra['dataset'])/'spec.json' if extra.get('dataset') else None
+    if source is not None and source.exists() and not (Path(model)/'spec.json').exists():
+        shutil.copy(source, Path(model)/'spec.json')
 
 
 def read_binding(model):
@@ -82,8 +88,11 @@ def raw_result(head, fx, limits, artifact_id, task):
 def evaluate_dataset(model, dataset, refit=False):
     """Per kind: fit (or reuse) a temperature on calibration, then score test."""
     from ..decision_probability import TemperatureCalibrator
+    from . import encoder
     from .picker import evaluate, is_tod_model
     from .rl import HeadPolicy
+    if encoder.is_encoder_model(model):
+        return encoder.evaluate(model, dataset, refit=refit)
     if is_tod_model(model):
         return evaluate(model, dataset, refit)
     model, dataset = Path(model), Path(dataset)

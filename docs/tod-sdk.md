@@ -6,14 +6,15 @@ defers when it isn't sure. It sits in front of a large model (or a person) and t
 bounded, repetitive decisions: which tool to call, which order an action applies to,
 which team gets a ticket.
 
-Two ways to train, with the same data, calibration, serving and RL:
+Three ways to train, with the same data, calibration and serving:
 
 | `--method` | What trains | Hardware |
 |---|---|---|
 | `tod` | The [TOD picker](https://huggingface.co/parsecai/tod) (Gemma 4 12B + LoRA): its stage-2 LoRA keeps training on your decisions | NVIDIA GPU with 40 GB+ (A100, H100, L40S, A6000), PyTorch. Also runs on a 64 GB Apple silicon Mac (MPS), slower |
 | `head` (default) | A ~2M-parameter head per decision kind on a frozen Gemma 3 4B | ~9 GB GPU (PyTorch) or any Apple silicon Mac (MLX) |
+| `encoder` | All of any Hugging Face model you name (default ModernBERT-large, 395M), with a per-candidate head. The only method for `Subset` targets (keep any set of candidates, e.g. retrieved passages) | NVIDIA GPU, several under `torchrun`; serves on CPU. Also trains on MPS or CPU, slower |
 
-See [Fine-tuning TOD](#fine-tuning-tod).
+See [Fine-tuning TOD](#fine-tuning-tod) and [Fine-tuning any model](#fine-tuning-any-model-keep-or-drop-each-candidate).
 
 It does not write free text. Anything that needs generation stays with the parent.
 
@@ -88,6 +89,90 @@ its zero-shot letter logits match TOD's own scorer exactly.
 `rollout`, `evaluate`, and RL (`improve`, `reinforce`). On TOD, RL updates the shared
 adapter, and the rollback guard checks every kind after each update.
 
+## Fine-tuning any model: keep or drop each candidate
+
+Some decisions aren't "pick one": a RAG filter reads a question and its top 10 retrieved
+passages and keeps the ones worth sending to the generator, any number, possibly none. Label
+those rows with `Subset(ids)` and train with `--method encoder`:
+
+```python
+from openjev.tod import Episode, ListSpec, Subset, build_dataset
+
+spec = ListSpec('ragzilla', [dict(name='keep', question='Which passages help answer the question?',
+                                  candidates='passages')])
+state = {'question': 'Who wrote Hamlet?', 'passages': ['...', '...', '...']}
+row = spec.decision('nq:123', 'keep', state, target=Subset(['p1', 'p3']))   # or Subset([]): none
+build_dataset(spec, [Episode('nq:123', (row,))]).write('runs/filter/data')
+```
+
+```bash
+openjev tod train runs/filter/data --method encoder --out runs/filter/model \
+    --loss focal --focal-gamma 2 --focal-alpha 0.5 --eval-every 1000 --checkpoint-every 1000
+torchrun --nproc_per_node 2 -m openjev tod train ...      # several GPUs
+```
+
+- **Any model.** `--model` takes any Hugging Face id or directory, encoders included (default
+  `answerdotai/ModernBERT-large`). Every weight trains. Each candidate is read as a pair,
+  (question + state, candidate text): it sees the question but never the other candidates.
+  A linear head on the mean of the final hidden states gives one probability per candidate.
+  `Choice` kinds train a softmax over their candidates; `Subset` kinds an independent sigmoid each.
+- **Loss.** BCE by default. `--loss focal` (gamma 2, alpha 0.5 is a good start) keeps rare
+  positives from being drowned out without rescaling probabilities the way class weights do;
+  gamma 0 and alpha 0.5 is BCE / 2. `--brier W` adds W times the Brier score. Other methods
+  refuse these flags rather than ignore them.
+- **Training.** float32 weights with bfloat16 autocast on CUDA, AdamW with linear warmup and
+  decay, `--batch-size` decisions per GPU per step. `--eval-every N` prints, on the validation
+  split, kept-right / wrongly-kept / wrongly-dropped candidate counts and decisions per second.
+  `--checkpoint-every N` saves `model/checkpoints/step-N`, keeping the newest `--keep-checkpoints`.
+- **Continue from a trained model.** `--model runs/filter/model` starts from its trunk and
+  head (and records `fine_tuned_from`): a few thousand of your own rows, `--max-steps 25
+  --learning-rate 1e-5`, and the operating points are re-chosen on your calibration split.
+
+### Operating points
+
+A filter is judged per question. A question **survives** when the kept set still holds a
+relevant candidate (`--survival any`, the default: answer survival) or all of them
+(`--survival all`). Two keep rules:
+
+| rule | keeps candidate i when |
+|---|---|
+| `tau` | p_i ≥ tau |
+| `rho` | p_i ≥ rho × the question's highest p; the top candidate is always kept |
+
+After training, for each rule and each target (`--targets 0.95,0.98,0.99`) the largest value
+whose survival on the calibration split reaches the target is stored in
+`model/operating_points.json`: the fewest candidates kept for that survival. `decide` uses
+the default point (`--default-point`, `rho_99`) unless you name another:
+
+```python
+policy = load_policy('runs/filter/model')            # the spec comes from the model's spec.json
+p = policy.decide(state, 'keep')                     # p.keep: ('p1', 'p3'), p.point: 'rho_99'
+p = policy.decide(state, 'keep', point='rho_98')     # or threshold=0.05 for p >= 0.05
+many = policy.decide_many([(state, 'keep') for state in states])   # packed forwards (GPU)
+```
+
+`openjev tod calibrate MODEL DATASET` re-chooses the points (and temperatures) on another
+calibration split without retraining: do this first on your own data.
+
+### Evaluating and shipping
+
+```bash
+openjev tod evaluate runs/filter/model runs/filter/data                    # test split
+openjev tod evaluate runs/filter/model runs/trec-dl --out trec.json --probabilities trec.jsonl
+openjev tod export runs/filter/model runs/filter/shipped
+```
+
+`evaluate` reports, for every stored point: answer and all-relevant survival, the share of
+candidate tokens kept, candidates kept per question, and the fixed top-k prefix that would
+need for the same survival (and its tokens). It breaks results down by source when decision
+ids look like `source:id`. An evaluation-only dataset (built with `fractions={'test': 1.0}`)
+works, and `--out` keeps the model's own `evaluation.json` untouched.
+
+`export` writes the trunk in bfloat16 and the head in float32 with the spec, calibration and
+operating points and no checkpoints, reloads the copy, and fails if its probabilities differ
+from the source's by more than 0.02 on a sample of the model's data. The copy serves with
+`load_policy(MODEL, device='cpu')` (float32) or `device='cuda'` (bfloat16).
+
 ## The pipeline
 
 ```
@@ -117,12 +202,13 @@ your data ──adapter──▶ Decisions ──build_dataset──▶ dataset 
 | `Kind(name, question, candidates, version)` | A decision type. `candidates(state)` lists the options for a state. Bump `version` whenever that function's behaviour changes. |
 | `DecisionSpec(name, kinds)` | All kinds for one product. Builds rows (`decision`), rejects stale rows (`check`), serves (`decide`). Its `fingerprint` binds data and models together. |
 | `Decision` | One training row: `kind`, `state`, `question`, `candidates`, `target`, `group_id`. |
-| `Choice` / `Preference` / `Outcome` / `NoneCorrect` | Typed supervision. A missing target means unlabelled, never wrong. `NoneCorrect` marks a taken action that wasn't among the candidates (a recall miss). |
+| `ListSpec(name, kinds)` | A declarative spec whose candidates are a list in the state (`{name, question, candidates: STATE_KEY}`). Written to `spec.json` with the dataset and copied into the model, so `load_policy(MODEL)` needs no code. |
+| `Choice` / `Subset` / `Preference` / `Outcome` / `NoneCorrect` | Typed supervision. `Subset(ids)`: these candidates are right and the others wrong (empty allowed); trains with `--method encoder`. A missing target means unlabelled, never wrong. `NoneCorrect` marks a taken action that wasn't among the candidates (a recall miss). |
 | `Episode(id, decisions, outcome)` | One conversation; groups rows for splitting and carries an outcome for filtering. |
 | `Dataset` | Output of `build_dataset`; `write(dir)` produces the directory `openjev tod train` reads. |
-| `Prediction` | `choice_id`, `confidence`, `probabilities`, `defer`, `reason`, `payload`. |
+| `Prediction` | `choice_id`, `confidence`, `probabilities`, `defer`, `reason`, `payload`; for Subset kinds also `keep`, `keep_payloads` and the operating `point`. |
 | `Environment` | `reset(seed)`, `observe() -> (kind, state) or None`, `act(payload)`, `defer()`, `reward()`. Anything that can replay your product's decisions. |
-| `load_policy(model, spec)` | A trained model (TOD or heads) acting through a spec: `decide`, `rollout`, `evaluate`. Refuses a model trained with a different spec. Kinds without a trained head always defer. |
+| `load_policy(model, spec=None)` | A trained model (TOD, heads or encoder) acting through a spec (default: the model's `spec.json`): `decide`, `rollout`, `evaluate`. Refuses a model trained with a different spec. Kinds without a trained head always defer. |
 
 ## Labelling from what actually happened
 
