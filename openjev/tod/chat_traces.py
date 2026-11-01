@@ -162,6 +162,9 @@ class ChatTraceSpec(DecisionSpec):
         self.tools, self.id_params, self.respond, self.source = tools, id_params, respond, source
         self.sql_params = sql_params or {}
 
+    def definition(self):
+        return self.source
+
     def save(self, path):
         """Write what is needed to rebuild this spec at serving time."""
         with open(path, 'x') as stream:

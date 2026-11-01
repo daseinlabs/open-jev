@@ -1,6 +1,10 @@
 """DecisionSpec: the user-supplied definition of which decisions exist and how candidates
 are enumerated. The same spec builds training rows and serves predictions, and its
 fingerprint travels with datasets and artifacts so the two cannot silently drift.
+
+A spec that can describe itself as data (`ListSpec`, chat-trace specs) is also written to
+`spec.json` beside the rows and copied into every model trained on them, so
+`load_policy(MODEL)` serves without importing the code that defined it.
 """
 from __future__ import annotations
 
@@ -49,6 +53,14 @@ class DecisionSpec:
     def require(self, fingerprint):
         if fingerprint != self.fingerprint:
             raise ValueError('data or artifact was built with a different DecisionSpec; rebuild it')
+
+    def definition(self) -> dict | None:
+        """The spec as JSON for `load_spec`, or None when it is defined by code."""
+        return None
+
+    def context(self, kind, state):
+        """The part of the state that every candidate is read against (encoder models)."""
+        return state
 
     def kind(self, name):
         if name not in self.kinds:
@@ -111,11 +123,61 @@ class DecisionSpec:
                           reason, decision.candidate(choice).payload)
 
 
+class ListSpec(DecisionSpec):
+    """A declarative spec whose candidates are a list stored in the state.
+
+    Each kind is {name, question, candidates, version}: `candidates` names the state key that
+    holds the list. An item is a string (its text; id `p1`, `p2`, ... by position, payload its
+    0-based index) or {id, text, payload}. For example a retrieval filter:
+
+        ListSpec('ragzilla', [dict(name='keep', question='Which passages help answer the question?',
+                                   candidates='passages')])
+        state = {'question': 'who wrote ...', 'passages': ['...', '...']}
+    """
+
+    def __init__(self, name, kinds):
+        self.declared = [dict(name=k['name'], question=k['question'], candidates=k['candidates'],
+                              version=str(k.get('version', '1'))) for k in kinds]
+        super().__init__(name, [Kind(k['name'], k['question'], self._enumerator(k['candidates']),
+                                     f"{k['version']}+list:{k['candidates']}") for k in self.declared])
+
+    @staticmethod
+    def _enumerator(key):
+        def candidates(state):
+            if not isinstance(state, dict) or not isinstance(state.get(key), list):
+                raise ValueError(f'state must be an object with a list under {key!r}')
+            for i, item in enumerate(state[key]):
+                if isinstance(item, str):
+                    yield Candidate(f'p{i + 1}', item, i)
+                else:
+                    yield Candidate(str(item['id']), item['text'], item.get('payload'))
+        return candidates
+
+    def definition(self):
+        return dict(type='list', name=self.name, kinds=self.declared)
+
+    def context(self, kind, state):
+        key = next(k['candidates'] for k in self.declared if k['name'] == kind)
+        return {k: v for k, v in state.items() if k != key}
+
+
+def load_spec(path) -> DecisionSpec:
+    """Rebuild a spec from its `spec.json` (a ListSpec or a chat-trace spec)."""
+    value = json.loads(Path(path).read_text())
+    if value.get('type') == 'list':
+        return ListSpec(value['name'], value['kinds'])
+    if 'tools' in value:
+        from .chat_traces import spec_from_tools
+        return spec_from_tools(**value)
+    raise ValueError(f'{path}: not a spec definition')
+
+
 @dataclass
 class Dataset:
     spec: str
     splits: dict[str, list[Decision]]
     report: dict = field(default_factory=dict)
+    definition: dict | None = None  # written as spec.json when the spec can describe itself
 
     def write(self, out):
         """Write v2 rows per split, plus v1 `*.choice.jsonl` files the current trainer reads."""
@@ -131,6 +193,8 @@ class Dataset:
                         stream.write(canonical(d.to_choice_task().to_dict()) + '\n')
         (out/'manifest.json').write_text(json.dumps(dict(schema_version=2, spec=self.spec,
                                                          report=self.report), indent=2) + '\n')
+        if self.definition is not None:
+            (out/'spec.json').write_text(json.dumps(self.definition, indent=2) + '\n')
 
 
 def split_of(group, seed, fractions):
@@ -186,7 +250,7 @@ def build_dataset(spec: DecisionSpec, episodes: Iterable[Episode], *, fractions=
         labelled[d.kind] += 1
         misses[d.kind] += isinstance(d.target, NoneCorrect)
     report['recall_miss_rate'] = {k: misses[k] / n for k, n in sorted(labelled.items())}
-    return Dataset(spec.fingerprint, splits, report)
+    return Dataset(spec.fingerprint, splits, report, spec.definition())
 
 
 def load_decisions(path, spec: DecisionSpec | None = None):
