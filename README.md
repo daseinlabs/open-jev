@@ -14,13 +14,17 @@ option scores gives a probability per option, like `jevlike-predict`.
 
 `openjev.tod` fine-tunes task-oriented decision models on your data. A decision model picks
 one option from a list your code supplies (which tool, which order, which team), reports a
-calibrated confidence, and defers to a bigger model when unsure. Two methods:
+calibrated confidence, and defers to a bigger model when unsure. Three methods:
 
 - `--method tod` fine-tunes [TOD](https://huggingface.co/parsecai/tod) (Gemma 4 12B + LoRA) on an
   NVIDIA GPU with 40 GB+ (PyTorch). On cookbook 01 it takes TOD from 84.2% / 66.3% zero-shot to
   97.0% / 100% (team / priority).
 - `--method head` (default) trains small heads on a frozen Gemma 3 4B: ~9 GB GPU (PyTorch) or
   any Apple silicon Mac (MLX).
+- `--method encoder` fully fine-tunes any Hugging Face model (default ModernBERT-large) with a
+  per-candidate head, on one or several GPUs (`torchrun`), and serves on CPU. It also trains
+  `Subset` targets: keep any set of the candidates, e.g. the retrieved passages worth sending
+  to the generator, at an operating point chosen for a target survival rate.
 
 Install with `pip install openjev-sdk`.
 
@@ -39,8 +43,11 @@ build_dataset(spec, episodes).write('runs/routing')
 openjev tod train runs/routing --method tod --out runs/routing-model   # fine-tune TOD (fetched on first use)
 ```
 
-Chat traces, RL in a simulator, and deriving the spec from your tool schemas are covered in
-the [SDK guide](https://github.com/daseinlabs/open-jev/blob/main/docs/tod-sdk.md) and the three [cookbooks](https://github.com/daseinlabs/open-jev/tree/main/cookbooks).
+Chat traces, RL in a simulator, deriving the spec from your tool schemas, and keep/drop
+filters with `--method encoder` are covered in the
+[SDK guide](https://github.com/daseinlabs/open-jev/blob/main/docs/tod-sdk.md); the
+[cookbooks](https://github.com/daseinlabs/open-jev/tree/main/cookbooks) walk through routing,
+chat traces to RL, your own traces, and a SQL assistant end to end.
 
 ## Demo: Doom in the terminal
 

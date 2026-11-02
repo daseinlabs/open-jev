@@ -129,7 +129,13 @@ def tiny_bert(root):
 @unittest.skipUnless(importlib.util.find_spec('torch') and importlib.util.find_spec('transformers'),
                      'needs torch and transformers')
 class EncoderEndToEndTests(unittest.TestCase):
-    def test_train_calibrate_evaluate_export_serve_continue(self):
+    def test_packed_layout(self):
+        self.run_pipeline(layout=None, head=None)
+
+    def test_pairs_layout_with_linear_head(self):
+        self.run_pipeline(layout='pairs', head='linear')
+
+    def run_pipeline(self, layout, head):
         from openjev import compute
         from openjev.tod.encoder import calibrate, evaluate, export, finetune
         from openjev.tod.rl import load_policy
@@ -138,9 +144,12 @@ class EncoderEndToEndTests(unittest.TestCase):
             tmp = Path(tmp)
             base = tiny_bert(tmp/'bert')
             build_dataset(SPEC, episodes(240)).write(tmp/'data')
-            result = finetune(tmp/'data', tmp/'model', source=base, epochs=2, batch_size=8, learning_rate=1e-3,
-                              loss='focal', eval_every=10, checkpoint_every=10, keep_checkpoints=1,
-                              log=lambda m: None)
+            result = finetune(tmp/'data', tmp/'model', source=base, epochs=2, batch_tokens=600, learning_rate=1e-3,
+                              loss='focal', eval_every=10, checkpoint_every=10, keep_checkpoints=1, layout=layout,
+                              head=head, log=lambda m: None)
+            config = json.loads((tmp/'model'/'encoder.json').read_text())
+            self.assertEqual((config['layout'], config['head']), (layout or 'packed', head or 'mlp'))
+            self.assertIn('keep', json.loads((tmp/'model'/'calibration.json').read_text())['temperatures'])
             self.assertEqual(len(list((tmp/'model'/'checkpoints').iterdir())), 1)
             points = json.loads((tmp/'model'/'operating_points.json').read_text())
             self.assertEqual(points['default'], 'rho_99')
@@ -165,8 +174,12 @@ class EncoderEndToEndTests(unittest.TestCase):
             again = calibrate(tmp/'model', tmp/'data', targets=(.9,), default_point='tau_90')
             self.assertEqual(set(again['operating_points']['kinds']['keep']), {'tau_90', 'rho_90'})
             build_dataset(SPEC, episodes(30, seed=5), fractions={'test': 1.0}).write(tmp/'external')
-            report = evaluate(tmp/'model', tmp/'external', out=tmp/'ext.json', probabilities=tmp/'p.jsonl')
-            self.assertEqual(report['test']['keep']['questions'], 30)
+            report = evaluate(tmp/'model', tmp/'external', out=tmp/'ext.json', probabilities_path=tmp/'p.jsonl',
+                              match_survival=0.9)
+            keep = report['test']['keep']
+            self.assertEqual(keep['questions'], 30)
+            self.assertGreaterEqual(keep['rho_matched']['answer_survival'], 0.9)
+            self.assertIn('calibration_error', keep)
             self.assertEqual(len((tmp/'p.jsonl').read_text().splitlines()), 30)
 
             # Export: bf16 trunk, no checkpoints, same decisions.
@@ -177,12 +190,58 @@ class EncoderEndToEndTests(unittest.TestCase):
                                                   if p.is_file() and 'checkpoints' not in p.parts))
             self.assertEqual(load_policy(tmp/'shipped').decide(states[0], 'keep').choice_id is not None, True)
 
+            # A self-contained Hugging Face folder: loads with AutoModel, same probabilities.
+            hf = export(tmp/'model', tmp/'hf', check=8, hf=True, log=lambda m: None)
+            self.assertTrue((tmp/'hf'/'modeling_openjev.py').exists())
+            self.assertLess(hf['max_probability_difference'], 0.02)  # bf16 trunk: a boundary keep may flip
+            self.assertGreaterEqual(hf['same_decisions'], 6)
+
             # Continued fine-tuning starts from the trained trunk and head.
             more = finetune(tmp/'data', tmp/'more', source=tmp/'model', max_steps=3, learning_rate=1e-5,
-                            log=lambda m: None)
+                            batch_size=4, log=lambda m: None)
             binding = json.loads((tmp/'more'/'tod.json').read_text())
             self.assertEqual(binding['fine_tuned_from'], str(tmp/'model'))
             self.assertIn('operating_points', more['calibration'])
+
+
+@unittest.skipUnless(importlib.util.find_spec('torch') and importlib.util.find_spec('transformers'),
+                     'needs torch and transformers')
+class PackingTests(unittest.TestCase):
+    def test_scores_ignore_siblings_and_order(self):
+        from openjev import compute
+        from openjev.tod.encoder import EncoderModel
+        compute.select('torch', 'cpu')
+        with tempfile.TemporaryDirectory() as tmp:
+            model = EncoderModel(tiny_bert(Path(tmp)/'bert'))
+            self.assertEqual(model.layout, 'packed')
+            state = dict(question='word apple', passages=['apple river stone', 'cloud tiger', 'piano lemon house'])
+            full = SPEC.decision('a', 'keep', state)
+            fewer = SPEC.decision('b', 'keep', dict(state, passages=state['passages'][:2]))
+            reordered = SPEC.decision('c', 'keep', dict(state, passages=state['passages'][::-1]))
+            a, b, c = model.score([full, fewer, reordered], SPEC)
+            self.assertAlmostEqual(a[0], b[0], places=4)
+            np.testing.assert_allclose(a, c[::-1], atol=1e-4)
+
+
+class StepPlanTests(unittest.TestCase):
+    def test_token_budget_and_rank_balance(self):
+        from openjev.tod.encoder import plan_steps
+        lengths = np.random.default_rng(0).integers(40, 1000, size=400)
+        steps = plan_steps(list(range(400)), 2, batch_tokens=4000, lengths=lengths)
+        for ranks in steps:
+            totals = [lengths[r].sum() for r in ranks]
+            self.assertGreaterEqual(sum(totals), 8000)
+            self.assertLess(sum(totals), 8000 + 1000)
+            self.assertLess(abs(totals[0] - totals[1]), 1000)
+        by_count = plan_steps(list(range(10)), 2, batch_size=2)
+        self.assertEqual(by_count[0], [[0, 2], [1, 3]])
+
+    def test_subset_temperature(self):
+        from openjev.tod.encoder import fit_subset_temperature
+        rng = np.random.default_rng(1)
+        z = rng.normal(0, 4, size=20000)
+        y = (rng.random(20000) < 1 / (1 + np.exp(-z / 2))).astype(np.float32)
+        self.assertAlmostEqual(fit_subset_temperature([z], [y]), 2.0, delta=0.15)
 
 
 if __name__ == '__main__':
