@@ -5,9 +5,9 @@ from pathlib import Path
 from ..backbone import DEFAULT_REPO
 
 # Flags only `--method encoder` reads; other methods refuse them instead of ignoring them.
-ENCODER_FLAGS = ('loss', 'focal_gamma', 'focal_alpha', 'brier', 'batch_size', 'max_steps', 'eval_every',
-                 'eval_split', 'checkpoint_every', 'keep_checkpoints', 'max_length', 'targets', 'survival',
-                 'default_point')
+ENCODER_FLAGS = ('loss', 'focal_gamma', 'focal_alpha', 'brier', 'batch_size', 'batch_tokens', 'head_learning_rate',
+                 'layout', 'head', 'attention', 'gradient_checkpointing', 'max_steps', 'eval_every', 'eval_split',
+                 'checkpoint_every', 'keep_checkpoints', 'max_length', 'targets', 'survival', 'default_point')
 
 
 def _targets(text):
@@ -28,15 +28,16 @@ def run(args):
         result = calibrate(args.model, args.dataset, split=args.split, **options)
     elif args.action == 'export':
         from .encoder import export
-        result = export(args.model, args.out, check=args.check, device=args.device)
+        result = export(args.model, args.out, check=args.check, device=args.device, hf=args.hf)
     else:
         from .encoder import evaluate, is_encoder_model
         if is_encoder_model(args.model):
             result = evaluate(args.model, args.dataset, split=args.split, out=args.out,
-                              probabilities=args.probabilities, refit=args.refit, source_sep=args.source_sep)
+                              probabilities_path=args.probabilities, refit=args.refit, source_sep=args.source_sep,
+                              match_survival=args.match_survival)
         else:
-            if (args.split, args.out, args.probabilities) != ('test', None, None):
-                raise SystemExit('--split, --out and --probabilities apply to --method encoder models')
+            if (args.split, args.out, args.probabilities, args.match_survival) != ('test', None, None, None):
+                raise SystemExit('--split, --out, --probabilities and --match-survival apply to --method encoder models')
             from .train import evaluate_dataset
             result = evaluate_dataset(args.model, args.dataset, refit=args.refit)
     print(json.dumps(result, indent=2))
@@ -60,12 +61,15 @@ def _train(args):
         if args.loss != 'focal':
             raise SystemExit('--focal-gamma and --focal-alpha need --loss focal')
     options = dict(loss=args.loss, focal_gamma=args.focal_gamma, focal_alpha=args.focal_alpha, brier=args.brier,
-                   batch_size=args.batch_size, max_steps=args.max_steps, eval_every=args.eval_every,
+                   batch_size=args.batch_size, batch_tokens=args.batch_tokens,
+                   head_learning_rate=args.head_learning_rate, layout=args.layout, head=args.head,
+                   attention=args.attention, gradient_checkpointing=args.gradient_checkpointing,
+                   max_steps=args.max_steps, eval_every=args.eval_every,
                    eval_split=args.eval_split, checkpoint_every=args.checkpoint_every,
                    keep_checkpoints=args.keep_checkpoints, max_length=args.max_length,
                    targets=_targets(args.targets), survival=args.survival, default_point=args.default_point)
     return finetune(args.dataset, args.out, source=args.model or DEFAULT_MODEL, epochs=args.epochs or 1,
-                    learning_rate=args.learning_rate or 2e-5, seed=args.seed,
+                    learning_rate=args.learning_rate or 3e-5, seed=args.seed,
                     **{k: v for k, v in options.items() if v is not None})
 
 
@@ -88,7 +92,7 @@ def register(subparsers):
     t.add_argument('--out', type=Path, required=True)
     t.add_argument('--epochs', type=int, default=None, help='default: 2 (tod), 20 (head), 1 (encoder)')
     t.add_argument('--learning-rate', type=float, default=None,
-                   help='default: 2e-5 (tod, encoder), 5e-5 (head)')
+                   help='default: 2e-5 (tod), 5e-5 (head), 3e-5 (encoder trunk)')
     t.add_argument('--max-train', type=int, default=None, help='tod: train on a random subset of this many rows')
     t.add_argument('--rank', type=int, default=256)
     t.add_argument('--seed', type=int, default=7)
@@ -97,7 +101,17 @@ def register(subparsers):
     g.add_argument('--focal-gamma', type=float, default=None, help='default 2')
     g.add_argument('--focal-alpha', type=float, default=None, help='weight of positives, default 0.5')
     g.add_argument('--brier', type=float, default=None, help='add this times the Brier score (default 0)')
-    g.add_argument('--batch-size', type=int, default=None, help='decisions per step per GPU (default 8)')
+    g.add_argument('--batch-tokens', type=int, default=None, help='tokens per step per GPU (default 32768)')
+    g.add_argument('--batch-size', type=int, default=None, help='decisions per step per GPU, instead of --batch-tokens')
+    g.add_argument('--head-learning-rate', type=float, default=None, help='default: 3x --learning-rate')
+    g.add_argument('--layout', choices=('packed', 'pairs'), default=None,
+                   help='packed (default): the question once per decision, candidates in masked spans; '
+                        'pairs: one sequence per candidate')
+    g.add_argument('--head', choices=('mlp', 'linear'), default=None, help='default mlp')
+    g.add_argument('--attention', default=None,
+                   help='auto (default): sdpa, or flash_attention_2 for pairs on CUDA when flash-attn is installed')
+    g.add_argument('--gradient-checkpointing', action='store_true', default=None,
+                   help='trade ~30%% speed for memory (small GPUs)')
     g.add_argument('--max-steps', type=int, default=None, help='stop after this many steps')
     g.add_argument('--max-length', type=int, default=None, help='tokens per (question, candidate) pair')
     g.add_argument('--eval-every', type=int, default=None, help='probe --eval-split every N steps')
@@ -112,6 +126,8 @@ def register(subparsers):
     e.add_argument('--out', type=Path, default=None, help="encoder: write the report here, not the model's evaluation.json")
     e.add_argument('--probabilities', type=Path, default=None, help='encoder: save per-candidate probabilities (JSON lines)')
     e.add_argument('--source-sep', default=':', help='encoder: per-source metrics by decision id prefix (default ":")')
+    e.add_argument('--match-survival', type=float, default=None,
+                   help='encoder: also report tau and rho chosen on this split to reach this survival')
     c = commands.add_parser('calibrate', help='encoder: re-fit temperatures and re-choose operating points without '
                                               'retraining')
     c.add_argument('model', type=Path)
@@ -122,6 +138,8 @@ def register(subparsers):
     x.add_argument('model', type=Path, help='a model or checkpoint directory')
     x.add_argument('out', type=Path)
     x.add_argument('--check', type=int, default=64, help='rows to compare against the source (0: skip)')
+    x.add_argument('--hf', action='store_true',
+                   help='write a self-contained Hugging Face folder (AutoModel, trust_remote_code=True)')
     for command in (t, c):
         command.add_argument('--targets', default=None, help='encoder: survival targets, default 0.95,0.98,0.99')
         command.add_argument('--survival', choices=('any', 'all'), default=None,

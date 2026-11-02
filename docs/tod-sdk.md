@@ -112,17 +112,39 @@ torchrun --nproc_per_node 2 -m openjev tod train ...      # several GPUs
 ```
 
 - **Any model.** `--model` takes any Hugging Face id or directory, encoders included (default
-  `answerdotai/ModernBERT-large`). Every weight trains. Each candidate is read as a pair,
-  (question + state, candidate text): it sees the question but never the other candidates.
-  A linear head on the mean of the final hidden states gives one probability per candidate.
-  `Choice` kinds train a softmax over their candidates; `Subset` kinds an independent sigmoid each.
+  `answerdotai/ModernBERT-large`). Every weight trains. A head (`--head mlp`, the default:
+  Linear-GELU-LayerNorm-Linear; or `linear`) gives one logit per candidate. `Choice` kinds train
+  a softmax over their candidates; `Subset` kinds an independent sigmoid each.
+- **Layout.** A candidate sees the question and state, never the other candidates.
+  - `--layout packed` (default): one sequence per decision. The question is encoded once;
+    each candidate span attends to it and to itself (a block attention mask, positions
+    restarting per candidate) and is pooled over its own span, so its score does not change
+    when other candidates are added, removed or reordered. Needs `sdpa` attention and a model
+    that takes position ids and a 4D mask; the SDK checks this when the model loads and falls
+    back to `pairs` with a message if it fails. BERT-style models and ModernBERT pass.
+  - `--layout pairs`: one (question + state, candidate) sequence per candidate. Works with any
+    model. With [flash-attn](https://github.com/Dao-AILab/flash-attention) installed on CUDA,
+    `--attention auto` uses `flash_attention_2`, which skips padding entirely.
+
+  Packed is faster when the question and state are long relative to the candidates (it
+  encodes them once instead of once per candidate). On a small retrieval set with
+  ModernBERT-large it needed half the training tokens of pairs and scored 1.65x more
+  decisions per second.
 - **Loss.** BCE by default. `--loss focal` (gamma 2, alpha 0.5 is a good start) keeps rare
   positives from being drowned out without rescaling probabilities the way class weights do;
   gamma 0 and alpha 0.5 is BCE / 2. `--brier W` adds W times the Brier score. Other methods
   refuse these flags rather than ignore them.
-- **Training.** float32 weights with bfloat16 autocast on CUDA, AdamW with linear warmup and
-  decay, `--batch-size` decisions per GPU per step. `--eval-every N` prints, on the validation
-  split, kept-right / wrongly-kept / wrongly-dropped candidate counts and decisions per second.
+- **Training.** float32 weights with bfloat16 autocast on CUDA; AdamW with linear warmup and
+  decay, `--learning-rate` for the trunk (default 3e-5) and `--head-learning-rate` for the new
+  head (default 3x). A step holds `--batch-tokens` tokens per GPU (default 32,768), so compute
+  and the effective learning rate don't vary with passage length; `--batch-size N` uses N
+  decisions instead. Token counts are computed once and cached in `DATASET/cache/`. Within a
+  step, decisions are sorted by length before they are cut into forwards, and the next steps
+  are tokenized on a background thread while the GPU trains. The step log shows tokens per
+  step and useful/padded tokens. Gradient checkpointing is off; `--gradient-checkpointing`
+  trades about 30% speed for memory on small GPUs.
+- **Monitoring.** `--eval-every N` prints, on the validation split, kept-right /
+  wrongly-kept / wrongly-dropped candidate counts and decisions per second.
   `--checkpoint-every N` saves `model/checkpoints/step-N`, keeping the newest `--keep-checkpoints`.
 - **Continue from a trained model.** `--model runs/filter/model` starts from its trunk and
   head (and records `fine_tuned_from`): a few thousand of your own rows, `--max-steps 25
@@ -139,8 +161,10 @@ relevant candidate (`--survival any`, the default: answer survival) or all of th
 | `tau` | p_i ≥ tau |
 | `rho` | p_i ≥ rho × the question's highest p; the top candidate is always kept |
 
-After training, for each rule and each target (`--targets 0.95,0.98,0.99`) the largest value
-whose survival on the calibration split reaches the target is stored in
+After training, a temperature is fitted per kind on the calibration split (Brier score over
+candidates for Subset kinds, NLL for Choice kinds) and applied to every probability the model
+reports. Then, for each rule and each target (`--targets 0.95,0.98,0.99`), the largest value
+whose survival on the calibrated calibration split reaches the target is stored in
 `model/operating_points.json`: the fewest candidates kept for that survival. `decide` uses
 the default point (`--default-point`, `rho_99`) unless you name another:
 
@@ -159,19 +183,45 @@ calibration split without retraining: do this first on your own data.
 ```bash
 openjev tod evaluate runs/filter/model runs/filter/data                    # test split
 openjev tod evaluate runs/filter/model runs/trec-dl --out trec.json --probabilities trec.jsonl
+openjev tod evaluate runs/filter/model runs/fiqa --match-survival 0.989    # compare at a reference's survival
 openjev tod export runs/filter/model runs/filter/shipped
+openjev tod export runs/filter/model runs/filter/hf --hf                   # a Hugging Face folder
 ```
 
-`evaluate` reports, for every stored point: answer and all-relevant survival, the share of
-candidate tokens kept, candidates kept per question, and the fixed top-k prefix that would
-need for the same survival (and its tokens). It breaks results down by source when decision
-ids look like `source:id`. An evaluation-only dataset (built with `fractions={'test': 1.0}`)
-works, and `--out` keeps the model's own `evaluation.json` untouched.
+`evaluate` reports the calibration error and Brier score, and for every stored point: answer
+and all-relevant survival, the share of candidate tokens kept, candidates kept per question,
+and the fixed top-k prefix that would need for the same survival (and its tokens).
+`--match-survival X` adds `tau_matched` and `rho_matched`, the values that reach survival X on
+the evaluated split itself, for comparing with another method at equal survival.
+
+Per-source rows come from decision ids: give each row an id `SOURCE:ID` (e.g. `nq:123`,
+`fever:88`) and the report adds `by_source` (`--source-sep` changes the separator). An
+evaluation-only dataset (built with `fractions={'test': 1.0}`) works, and `--out` keeps the
+model's own `evaluation.json` untouched.
 
 `export` writes the trunk in bfloat16 and the head in float32 with the spec, calibration and
 operating points and no checkpoints, reloads the copy, and fails if its probabilities differ
 from the source's by more than 0.02 on a sample of the model's data. The copy serves with
 `load_policy(MODEL, device='cpu')` (float32) or `device='cuda'` (bfloat16).
+
+`export --hf` writes one self-contained Hugging Face folder instead: `config.json` (with
+`auto_map`, the temperatures and the operating points), `model.safetensors`, the tokenizer, and
+`modeling_openjev.py`, the SDK's own layout and head code. It needs transformers, not the SDK:
+
+```python
+from transformers import AutoModel, AutoTokenizer
+model = AutoModel.from_pretrained('runs/filter/hf', trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained('runs/filter/hf')
+query = 'Which passages help answer the question?\n\n{\n "question": "Who wrote Hamlet?"\n}'
+model.score(tokenizer, query, passages, 'keep')   # calibrated probability per passage
+model.keep(tokenizer, query, passages, 'keep')    # indices kept at the default point
+```
+
+The query is the kind's question, a blank line, then the state without its candidate list
+(JSON with indent 1, or the string itself).
+
+Models trained with 0.4.0 (pairs layout, linear head, no Subset temperature) load and give
+the same results as before.
 
 ## The pipeline
 
