@@ -858,11 +858,12 @@ from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedMode
 class OpenjevScorerConfig(PretrainedConfig):
     model_type = 'openjev_scorer'
 
-    def __init__(self, base_config=None, head='mlp', layout='packed', max_length=8192, max_chars=4000,
+    def __init__(self, base_config=None, head='mlp', layout='packed', sequence_tokens=8192, max_chars=4000,
                  temperatures=None, operating_points=None, kind_targets=None, **kwargs):
         super().__init__(**kwargs)
         self.base_config, self.head, self.layout = base_config or {}, head, layout
-        self.max_length, self.max_chars = max_length, max_chars
+        # not max_length: transformers reserves that name for generation settings
+        self.sequence_tokens, self.max_chars = sequence_tokens, max_chars
         self.temperatures, self.operating_points = temperatures or {}, operating_points or {}
         self.kind_targets = kind_targets or {}
 
@@ -893,10 +894,10 @@ class OpenjevScorer(PreTrainedModel):
         temperature = self.config.temperatures.get(kind, 1.0) if kind else 1.0
         if self.config.kind_targets.get(kind) == 'choice':
             logits = torch.logit(torch.tensor(score(self.scorer, tokenizer, self.config.layout, query, candidates,
-                                                    max_length=self.config.max_length,
+                                                    max_length=self.config.sequence_tokens,
                                                     max_chars=self.config.max_chars)))
             return torch.softmax(logits / temperature, 0).tolist()
-        return score(self.scorer, tokenizer, self.config.layout, query, candidates, max_length=self.config.max_length,
+        return score(self.scorer, tokenizer, self.config.layout, query, candidates, max_length=self.config.sequence_tokens,
                      max_chars=self.config.max_chars, temperature=temperature)
 
     def keep(self, tokenizer, query, candidates, kind, point=None):
@@ -930,7 +931,7 @@ def _export_hf(source, model, out, temperatures):
         base = source.net.trunk.config.to_dict()
         base.pop('_attn_implementation_autoset', None)
         config = module.OpenjevScorerConfig(
-            base_config=base, head=source.head_type, layout=source.layout, max_length=source.max_length,
+            base_config=base, head=source.head_type, layout=source.layout, sequence_tokens=source.max_length,
             max_chars=source.max_chars, temperatures=temperatures, operating_points=operating.load(model) or {},
             kind_targets=read_binding(model)['kind_targets'])
         wrapper = module.OpenjevScorer(config)
