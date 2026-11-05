@@ -1,4 +1,5 @@
 """Step 7: target selection. LoRA on the language model, trained on cached features, three targets.
+(Step 8, `video_train.scale`, reuses `train` with `--step step8`.)
 
     python -m video_train.distill prepare                      # question suffix ids, once
     python -m video_train.distill train --variant B --lr 1e-4  # one run: train, then score dev
@@ -159,8 +160,27 @@ def run_tag(variant, lr, args):
     return args.tag or f"s7_{variant}_lr{lr:.0e}"
 
 
-def ckpt_dir(tag):
-    return storage.path("checkpoints", STEP, tag)
+def ckpt_dir(tag, step=STEP):
+    return storage.path("checkpoints", step, tag)
+
+
+FOLD_SEED = 11  # fixed video split for --fold (step 11's half adapters)
+
+
+def parse_fold(fold):
+    """'k/n' -> (k, n), with 0 <= k < n and n >= 2."""
+    k, n = (int(x) for x in fold.split("/"))
+    if not (n >= 2 and 0 <= k < n):
+        raise ValueError(f"bad fold {fold!r}: need k/n with 0 <= k < n, n >= 2")
+    return k, n
+
+
+def fold_of(video_ids, n):
+    """{video_id: fold}: the ids sorted, shuffled with FOLD_SEED, dealt round-robin into n folds.
+    Depends only on the set of ids, so training and feature extraction agree."""
+    ids = sorted(set(video_ids))
+    random.Random(FOLD_SEED).shuffle(ids)
+    return {v: i % n for i, v in enumerate(ids)}
 
 
 def _order(n_videos, seed, epoch):
@@ -179,10 +199,15 @@ def train(args, variant=None, lr=None):
     from .models import CONFIG, local_model
 
     variant, lr = variant or args.variant, lr or args.lr
-    alpha, tag = VARIANTS[variant], run_tag(variant, lr, args)
+    alpha, tag, step_name = VARIANTS[variant], run_tag(variant, lr, args), args.step
     storage.require_root()
     awake = storage.keep_awake()
     data = load_data("train", args.T)
+    fold = getattr(args, "fold", None)
+    if fold:
+        k, n = parse_fold(fold)
+        folds = fold_of([v for v, _ in data], n)
+        data = [(v, qs) for v, qs in data if folds[v] == k]
     if args.limit_videos:
         data = data[:args.limit_videos]
     require_cached(data, "train")
@@ -195,7 +220,9 @@ def train(args, variant=None, lr=None):
               "lora_alpha": args.lora_alpha, "seed": args.seed, "clip": 1.0, "train_videos": len(data),
               "train_questions": n_q, "dev_every": args.dev_every,
               "dev_curve_videos": args.dev_curve_videos, **FORMAT}
-    d = ckpt_dir(tag)
+    if fold:  # only when set, so earlier runs' configs still match on resume
+        config["fold"] = fold
+    d = ckpt_dir(tag, step_name)
     os.makedirs(d, exist_ok=True)
     state_file = os.path.join(d, "state.json")
     state = json.load(open(state_file)) if os.path.exists(state_file) else {"step": 0, "config": config}
@@ -269,14 +296,14 @@ def train(args, variant=None, lr=None):
             if args.dev_every and (done % args.dev_every == 0 or done == total):
                 _dev_curve(model, curve, label_ids, done, d)
             if done % args.save_every == 0 or done == total:
-                save_adapter(model, d, args.rank, args.lora_alpha, extra={"step7": config})
+                save_adapter(model, d, args.rank, args.lora_alpha, extra={step_name: config})
                 mx.save_safetensors(os.path.join(d, "optimizer.safetensors"), dict(tree_flatten(opt.state)))
                 state["step"] = done
                 tmp = state_file + ".tmp"
                 json.dump(state, open(tmp, "w"), indent=1)
                 os.replace(tmp, state_file)
         log_f.close()
-        log_run(STEP, "train", dict(config, tag=tag), {"manifest": "train", "teacher": TEACHER}, args.seed,
+        log_run(step_name, "train", dict(config, tag=tag), {"manifest": "train", "teacher": TEACHER}, args.seed,
                 {"steps": total, "train_s": time.time() - t_start})
         del model, opt
     if awake:
@@ -400,13 +427,13 @@ def evaluate_dev(tag, config, args):
     if data:
         model = mm.attach_lora(mm.load_model(local_model(FORMAT["model"])), rank=args.rank,
                                alpha=args.lora_alpha, checkpoint=False)
-        model.load_weights(list(mx.load(os.path.join(ckpt_dir(tag), "adapter.safetensors")).items()),
+        model.load_weights(list(mx.load(os.path.join(ckpt_dir(tag, args.step), "adapter.safetensors")).items()),
                            strict=False)
         model.eval()
         enc = Gemma4Inputs(CONFIG)
         row_cfg = {"set": "dev", "tag": tag, "model": FORMAT["model"], "mode": "encode_once",
                    "frames": FORMAT["frames"], "frames_as": FORMAT["frames_as"],
-                   "soft_tokens": FORMAT["soft_tokens"], "adapter": ckpt_dir(tag),
+                   "soft_tokens": FORMAT["soft_tokens"], "adapter": ckpt_dir(tag, args.step),
                    **{k: config[k] for k in ("variant", "alpha", "T", "lr")}}
         for vi, (vid, qs) in enumerate(data):
             rows, load_s, model_s = _score_video(model, vid, qs, enc.letter_ids(len(qs[0]["options"])))
@@ -419,7 +446,7 @@ def evaluate_dev(tag, config, args):
         del model
     s = metrics(list(load_results("dev", tag).values()))
     if not args.limit_dev_videos:
-        log_run(STEP, "eval", row_cfg if data else {"tag": tag}, {"manifest": "dev"}, args.seed, s)
+        log_run(args.step, "eval", row_cfg if data else {"tag": tag}, {"manifest": "dev"}, args.seed, s)
     print(json.dumps({k: v for k, v in s.items() if not isinstance(v, dict)}), flush=True)
 
 
@@ -435,18 +462,18 @@ def _pct(x):
     return f"{x:.1%}" if x is not None else "-"
 
 
-def _curve_lines(tags, teacher, base):
-    """Dev-sample learning curves (step 0 = zero-shot) and the end-of-training diagnostics."""
+def _curve_lines(dirs, teacher, base):
+    """Dev-sample learning curves (step 0 = zero-shot) and the end-of-training diagnostics.
+    ``dirs``: column label -> checkpoint directory."""
     curves, logs = {}, {}
-    for v, tag in tags.items():
-        d = ckpt_dir(tag)
+    for v, d in dirs.items():
         for name, store in (("dev_curve.jsonl", curves), ("train_log.jsonl", logs)):
             path = os.path.join(d, name)
             if os.path.exists(path):
                 store[v] = {r["step"]: r for r in map(json.loads, open(path))}  # a resumed run's repeat wins
     if not curves:
         return []
-    cfg = json.load(open(os.path.join(ckpt_dir(next(iter(tags.values()))), "state.json")))["config"]
+    cfg = json.load(open(os.path.join(next(iter(dirs.values())), "state.json")))["config"]
     sample = [(vid, q["qid"]) for vid, qs in dev_curve_data(cfg["T"], cfg["dev_curve_videos"]) for q in qs]
     zero = curve_stats([dict(base[k], video_id=k[0], qid=k[1]) for k in sample], teacher, base)
     steps = sorted({s for c in curves.values() for s in c})
@@ -503,7 +530,7 @@ def report(args):
         # With several learning rates: best by accuracy, NLL breaks ties.
         best[variant] = max(rs, key=lambda r: (metrics(list(r[2].values()))["accuracy"],
                                                -metrics(list(r[2].values()))["nll"]))
-    lines += _curve_lines({v: best[v][0] for v in sorted(best)}, teacher, base)
+    lines += _curve_lines({v: ckpt_dir(best[v][0]) for v in sorted(best)}, teacher, base)
     lines += ["", "## Best learning rate per variant", "",
               "| | accuracy | net vs zero-shot (p) | NLL | ECE | conf ≥ 0.8: cov / acc | drift | "
               "teacher agreement | acc where teacher wrong |", "|---|---|---|---|---|---|---|---|---|"]
@@ -597,6 +624,8 @@ def main(argv=None):
                        help="score the dev sample every n steps (0: off)")
         p.add_argument("--dev-curve-videos", type=int, default=DEV_CURVE_VIDEOS,
                        help="dev sample size, from the videos d3-mini scored")
+        p.add_argument("--step", default=STEP, help="plan step: checkpoints/<step>/<tag>, history.jsonl")
+    t.add_argument("--fold", default=None, help="k/n: train only on fold k of n (split by video, fixed seed)")
     r = sub.add_parser("report")
     r.add_argument("--lrs", default=",".join(f"{x:g}" for x in LRS))
     args = ap.parse_args(argv)

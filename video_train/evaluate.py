@@ -32,6 +32,7 @@ Rows: ``results/evals/<set>/<tag>.jsonl`` (resumable). Logged to history.jsonl.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -91,6 +92,8 @@ def run(args):
               "frames_as": args.frames_as, "soft_tokens": args.soft_tokens}
     if args.select != "uniform":  # only then, so rows written before selection existed still resume
         config.update(select=args.select, candidates=args.candidates)
+    if args.adapter:  # likewise
+        config["adapter"] = args.adapter
     done = set()
     if os.path.exists(out):
         prev = load_results(args.set, args.tag)
@@ -114,6 +117,11 @@ def run(args):
     warm = enc.encode("warm up", [__import__("PIL.Image").Image.new("RGB", (64, 64))], "images", 70)
     mx.eval(mm.letter_logits(model, warm.input_ids, mm.vision_features(model, warm.pixel_values, warm.position_ids),
                              "images", enc.letter_ids(3)))
+    scope = contextlib.nullcontext  # a factory: a @contextmanager scope can be entered only once
+    if args.adapter:  # the trained video LoRA, as served: installed per request, forced on here
+        from .adapters import adapter_scope, install_adapter
+        install_adapter(model, "video", args.adapter)
+        scope = lambda: adapter_scope("video")
     selector = None
     if args.select == "question":
         from .frame_select import SIGLIP, QuestionScorer
@@ -127,24 +135,25 @@ def run(args):
         t0 = time.perf_counter()
         encs = [enc.encode(prompt_of(q), frames, args.frames_as, args.soft_tokens, timestamps) for q in qs]
         t1 = time.perf_counter()
-        feats = mm.vision_features(model, encs[0].pixel_values, encs[0].position_ids)
-        mx.eval(feats)
-        t2 = time.perf_counter()
         n_opts = {len(q["options"]) for q in qs}
         if len(n_opts) != 1:
             raise ValueError(f"{qs[0]['video_id']}: questions with different option counts")
         labels = enc.letter_ids(n_opts.pop())
-        if args.mode == "encode_once":
-            p = encs[0].prefix_len
-            prefix = encs[0].input_ids[:p]
-            if any(e.input_ids[:e.prefix_len] != prefix for e in encs):
-                raise ValueError(f"{qs[0]['video_id']}: questions do not share the video prefix")
-            logits = mm.letter_logits_grouped(model, prefix, feats, args.frames_as,
-                                              [e.input_ids[p:] for e in encs], labels)
-            probs = np.array(mx.softmax(logits, axis=-1)).astype(float)
-        else:
-            probs = np.stack([np.array(mx.softmax(mm.letter_logits(model, e.input_ids, feats, args.frames_as,
-                                                                   labels))).astype(float) for e in encs])
+        with scope():
+            feats = mm.vision_features(model, encs[0].pixel_values, encs[0].position_ids)
+            mx.eval(feats)
+            t2 = time.perf_counter()
+            if args.mode == "encode_once":
+                p = encs[0].prefix_len
+                prefix = encs[0].input_ids[:p]
+                if any(e.input_ids[:e.prefix_len] != prefix for e in encs):
+                    raise ValueError(f"{qs[0]['video_id']}: questions do not share the video prefix")
+                logits = mm.letter_logits_grouped(model, prefix, feats, args.frames_as,
+                                                  [e.input_ids[p:] for e in encs], labels)
+                probs = np.array(mx.softmax(logits, axis=-1)).astype(float)
+            else:
+                probs = np.stack([np.array(mx.softmax(mm.letter_logits(model, e.input_ids, feats, args.frames_as,
+                                                                       labels))).astype(float) for e in encs])
         return probs, t1 - t0, t2 - t1, len(encs[0].input_ids)
 
     n_done, t_start = len(done), time.time()
@@ -309,6 +318,7 @@ def main(argv=None):
                    help="frame selection (step 3); uniform = the baseline")
     r.add_argument("--candidates", type=int, default=32, help="frames decoded before selection")
     r.add_argument("--limit-videos", type=int, default=0, help="timing sample")
+    r.add_argument("--adapter", default=None, help="LoRA adapter dir (saved by save_adapter), applied to every question")
     r.add_argument("--step", default="step2")
     a = sub.add_parser("agree")
     a.add_argument("--set", choices=SETS, required=True)

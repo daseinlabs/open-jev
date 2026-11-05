@@ -169,13 +169,13 @@ class _ConcatCache(KVCache):
         return self.keys, self.values
 
 
-def letter_logits_grouped(model, prefix_ids: list[int], feats, frames_as: str, suffixes: list[list[int]],
-                          label_ids: list[int]) -> mx.array:
-    """(n_questions, n_labels) letter logits: shared video prefix once, questions as one batch.
+def grouped_hidden(model, prefix_ids: list[int], feats, frames_as: str, suffixes: list[list[int]]) -> mx.array:
+    """(n_questions, max suffix length, hidden) final-norm hidden states of each question's tokens:
+    the shared video prefix once, the questions as one batch that reuses its KV cache.
 
     Sliding-window layers get a plain (non-rotating) cache; their mask applies the window, so
     attention is the same as in a single full pass. Suffixes are right-padded; causal attention
-    keeps padding invisible to the real tokens, and each row is read at its own last token.
+    keeps padding invisible to the real tokens (rows past a suffix's length are padding).
     """
     lm = model.language_model
     n_cached = lm.model.first_kv_shared_layer_idx
@@ -187,9 +187,21 @@ def letter_logits_grouped(model, prefix_ids: list[int], feats, frames_as: str, s
     width = max(map(len, suffixes))
     pad = model.config.text_config.pad_token_id or 0
     ids = mx.array([s + [pad] * (width - len(s)) for s in suffixes])
-    h = _hidden(model, ids, None, frames_as, cache=cache, keep=0)  # (k, width, hidden)
+    return _hidden(model, ids, None, frames_as, cache=cache, keep=0)  # (k, width, hidden)
+
+
+def last_letter_logits(model, h: mx.array, suffixes: list[list[int]], label_ids: list[int]) -> mx.array:
+    """(n_questions, n_labels) letter logits read at each question's own last token of ``h``."""
     last = mx.array([len(s) - 1 for s in suffixes])
-    return _letter_readout(model, h[mx.arange(k), last], label_ids)
+    return _letter_readout(model, h[mx.arange(len(suffixes)), last], label_ids)
+
+
+def letter_logits_grouped(model, prefix_ids: list[int], feats, frames_as: str, suffixes: list[list[int]],
+                          label_ids: list[int]) -> mx.array:
+    """(n_questions, n_labels) letter logits: shared video prefix once, questions as one batch
+    (see :func:`grouped_hidden`), each row read at its own last token."""
+    h = grouped_hidden(model, prefix_ids, feats, frames_as, suffixes)
+    return last_letter_logits(model, h, suffixes, label_ids)
 
 
 def letter_ce(logits: mx.array, target) -> mx.array:
