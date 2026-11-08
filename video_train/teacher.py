@@ -41,6 +41,7 @@ from . import storage
 from .evaluate import load_results, metrics, result_path
 from .history import log_run
 from .models import local_model
+from .perception_data import load_manifest
 
 MODEL = "d3-mini"
 SETS = {"dev": "dev", "train": "train"}
@@ -48,8 +49,7 @@ TRAIN_QUESTIONS = 7392
 
 
 def load_set(name):
-    with storage.drive_guard():
-        return [json.loads(line) for line in open(storage.path("manifests", f"{SETS[name]}.jsonl"))]
+    return load_manifest(SETS[name])
 
 
 def criteria(options):
@@ -98,7 +98,7 @@ def run(args):
         qs = [q for q in by_video[vid] if (vid, q["qid"]) not in done]
         keys = {str(q["qid"]): criteria(q["options"]) for q in qs}
         questions = {str(q["qid"]): {"type": "choice", "instructions": q["question"],
-                                     "criteria": {k: None for k in keys[str(q["qid"])]}} for q in qs}
+                                     "criteria": dict.fromkeys(keys[str(q["qid"])])} for q in qs}
         t0 = time.perf_counter()
         with storage.drive_guard():
             prepared = rt.prepare(None, questions, None, [storage.path(qs[0]["video"])])

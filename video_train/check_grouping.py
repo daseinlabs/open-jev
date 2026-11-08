@@ -15,13 +15,12 @@ from collections import defaultdict
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from mlx.utils import tree_flatten, tree_unflatten
 
-from openjev.systemone import ChoiceQuestion, render_choice
 from openjev.video import load_video
 
-from .inputs import LABELS, Gemma4Inputs
+from .evaluate import prompt_of
+from .inputs import Gemma4Inputs
 from .models import CONFIG, local_model
 from .mlx_model import attach_lora, letter_ce, letter_logits, letter_logits_grouped, load_model, vision_features
 
@@ -67,8 +66,7 @@ def main(argv=None):
             video = load_video(f"{args.videos_dir}/{vid}.mp4", n_frames=16)
             items, prefix = [], None
             for q in by_video[vid]:
-                prompt, _ = render_choice(None, ChoiceQuestion(type="choice", instructions=q["question"],
-                                                               criteria=dict(zip(LABELS, q["options"]))))
+                prompt = prompt_of(q)
                 e = enc.encode(prompt, video.frames, mode, soft, video.timestamps)
                 if prefix is None:
                     prefix = e.input_ids[:e.prefix_len]

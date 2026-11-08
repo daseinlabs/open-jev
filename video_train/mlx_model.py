@@ -117,10 +117,6 @@ def vision_features(model, pixel_values, position_ids, frame_batch: int = 2):
     return mx.stop_gradient(mx.concatenate(out, axis=1))  # each call returns (1, frames*tokens, hidden)
 
 
-def _soft_token_id(model, frames_as: str) -> int:
-    return model.config.video_token_id if frames_as == "video" else model.config.image_token_id
-
-
 def _embed(model, ids: mx.array, feats: mx.array | None, frames_as: str):
     """Main and per-layer embeddings, with the vision features scattered into the soft tokens."""
     kw = {}

@@ -1,5 +1,4 @@
 """Step 11: video folds, temperature fitting, which adapter reads which question, the head's start."""
-import math
 import unittest
 from unittest import mock
 

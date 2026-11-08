@@ -72,11 +72,7 @@ class TorchBackend:
         with self.torch.inference_mode():
             output = self.model(input_ids=self._tensor([ids]), use_cache=True)
             last = output.logits[0, -1].clone()
-            # Synchronize so public timing includes GPU execution.
-            if self.device.type == "cuda":
-                self.torch.cuda.synchronize(self.device)
-            elif self.device.type == "mps":
-                self.torch.mps.synchronize()
+            self._sync()  # so public timing includes GPU execution
             return (output.past_key_values, len(ids)), last
 
     # ---------------------------------------------------------- images/video

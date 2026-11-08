@@ -60,6 +60,7 @@ import numpy as np
 from . import storage
 from .cache_features import FORMAT, cache_dir, feature_path, load, suffix_ids
 from .history import log_run
+from .perception_data import load_manifest
 
 VARIANTS = {"A": 1.0, "B": 0.5, "C": 0.0}
 LRS = (1e-4,)  # one shared rate; a learning-rate search, if any, comes after, on the winner
@@ -100,11 +101,6 @@ def suffix_path():
     return os.path.join(cache_dir(FORMAT_TAG), "suffixes.json")
 
 
-def _manifest(name):
-    with storage.drive_guard():
-        return [json.loads(l) for l in open(storage.path("manifests", f"{name}.jsonl"))]
-
-
 def prepare(args):
     """Question ids after the video prefix, for train and dev (needs only the tokenizer)."""
     from .evaluate import prompt_of
@@ -114,7 +110,7 @@ def prepare(args):
     enc = Gemma4Inputs(CONFIG)
     out, t0 = {}, time.time()
     for name in ("train", "dev"):
-        for q in _manifest(name):
+        for q in load_manifest(name):
             out[f"{q['video_id']}/{q['qid']}"] = suffix_ids(enc, prompt_of(q), FORMAT["frames_as"],
                                                             FORMAT["soft_tokens"])
     os.makedirs(cache_dir(FORMAT_TAG), exist_ok=True)
@@ -132,7 +128,7 @@ def load_data(name, T: float):
         from .evaluate import load_results
         teacher = load_results("train", TEACHER)
     by_video = defaultdict(list)
-    for q in _manifest(name):
+    for q in load_manifest(name):
         k = (q["video_id"], q["qid"])
         q = dict(q, suffix=suffixes[f"{k[0]}/{k[1]}"])
         if name == "train":
@@ -525,11 +521,12 @@ def report(args):
     lines = [f"# {STEP}: target selection", "",
              f"Perception Test dev ({mb['n']} questions), cached features, LoRA on the language model only. "
              f"Teacher columns on the {len(teacher)} dev questions d3-mini scored (step 4).", ""]
-    best = {}
-    for variant, rs in runs.items():
-        # With several learning rates: best by accuracy, NLL breaks ties.
-        best[variant] = max(rs, key=lambda r: (metrics(list(r[2].values()))["accuracy"],
-                                               -metrics(list(r[2].values()))["nll"]))
+
+    def rank(r):  # with several learning rates: best by accuracy, NLL breaks ties
+        mt = metrics(list(r[2].values()))
+        return mt["accuracy"], -mt["nll"]
+
+    best = {variant: max(rs, key=rank) for variant, rs in runs.items()}
     lines += _curve_lines({v: ckpt_dir(best[v][0]) for v in sorted(best)}, teacher, base)
     lines += ["", "## Best learning rate per variant", "",
               "| | accuracy | net vs zero-shot (p) | NLL | ECE | conf ≥ 0.8: cov / acc | drift | "

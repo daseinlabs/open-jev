@@ -28,7 +28,7 @@ from . import storage
 from .history import log_run
 from .inputs import LABELS
 from .models import CONFIG, local_model
-from .perception_data import load_manifest
+from .perception_data import load_manifest, manifest_path
 
 BACKENDS = {"torch-bf16": "gemma-4-E4B-it", "mlx-8bit": "gemma-4-E4B-it-mlx-8bit",
             "mlx-4bit": "gemma-4-E4B-it-mlx-4bit"}  # model names; staged from the drive when missing
@@ -46,10 +46,9 @@ def questions(n):
     First written from the original 501-question dev set (its first whole videos reaching
     ``n`` questions, by video id), so the set stays the same when dev grows.
     """
-    frozen = storage.path("manifests", f"precision{n}.jsonl")
+    frozen = manifest_path(f"precision{n}")
     if os.path.exists(frozen):
-        with storage.drive_guard():
-            return [json.loads(l) for l in open(frozen)]
+        return load_manifest(f"precision{n}")
     rows, by_video = load_manifest("dev"), defaultdict(list)
     for r in rows:
         by_video[r["video_id"]].append(r)

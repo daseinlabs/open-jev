@@ -35,6 +35,8 @@ import numpy as np
 
 from . import storage
 from .history import log_run
+from .perception_data import load_manifest
+from .probe import _by_video, _save_npz
 
 STEP = "step11"
 FULL = "s8_A_ep2"                                   # the model being calibrated / extended (checkpoints/step8)
@@ -67,20 +69,16 @@ def out_dir(smoke=False):
     return storage.path("results", smoke_tag(STEP, smoke))
 
 
+def calibration_file():
+    return os.path.join(out_dir(), "calibration.json")
+
+
 def head_file(seed, smoke=False):
     return os.path.join(out_dir(smoke), "head", f"seed{seed}.json")
 
 
 def _questions(set_name):
-    from .distill import _manifest
-    return _manifest(SETS[set_name])
-
-
-def _by_video(rows):
-    out = {}
-    for r in rows:
-        out.setdefault(r["video_id"], []).append(r)
-    return out
+    return load_manifest(SETS[set_name])
 
 
 # ------------------------------------------------------------------ part A: temperature
@@ -149,12 +147,16 @@ def calibrate(args):
     dev, nq = load_results("dev", FULL), load_results("nextqa", FULL)
     cv, Ts, T = crossfit(dev)
     keep = ("accuracy", "nll", "brier", "ece", "mean_confidence", "coverage_conf_ge_0.8", "accuracy_conf_ge_0.8")
-    m = lambda rows: {k: metrics(list(rows.values()))[k] for k in keep}
+
+    def m(rows):
+        mt = metrics(list(rows.values()))
+        return {k: mt[k] for k in keep}
+
     out = {"T": T, "fold_T": Ts, "dev_raw": m(dev), "dev_crossfit": m(cv), "nextqa_raw": m(nq),
            "nextqa_T": m(apply_temperature(nq, T))}
     out["kept"] = out["dev_crossfit"]["ece"] < out["dev_raw"]["ece"] and out["dev_crossfit"]["nll"] < out["dev_raw"]["nll"]
     os.makedirs(out_dir(), exist_ok=True)
-    with storage.drive_guard(), open(os.path.join(out_dir(), "calibration.json"), "w") as f:
+    with storage.drive_guard(), open(calibration_file(), "w") as f:
         json.dump(out, f, indent=1)
     print(f"T = {T:.3f} (folds {Ts[0]:.3f}, {Ts[1]:.3f}); dev ECE {out['dev_raw']['ece']:.3f} -> "
           f"{out['dev_crossfit']['ece']:.3f}, NLL {out['dev_raw']['nll']:.3f} -> {out['dev_crossfit']['nll']:.3f}; "
@@ -267,7 +269,7 @@ def features(args):
             for j, (_, sp) in enumerate(toks):
                 for k, idx in enumerate(sp):
                     spans[j, k, idx] = True
-            _save(feature_file(s, vid, smoke), qid=np.array([q["qid"] for q in qs]),
+            _save_npz(feature_file(s, vid, smoke), qid=np.array([q["qid"] for q in qs]),
                   hidden=np.array(h.astype(mx.float16)), length=np.array([len(x) for x in suffixes]),
                   spans=spans, letter=np.array(letter).astype(np.float32),
                   answer_id=np.array([q["answer_id"] for q in qs]), reader=np.array(tag))
@@ -279,13 +281,6 @@ def features(args):
     if awake:
         awake.terminate()
     check_features(args)
-
-
-def _save(path, **arrays):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path[:-len(".npz")] + ".tmp.npz"
-    np.savez(tmp, **arrays)
-    os.replace(tmp, path)
 
 
 def check_features(args):
@@ -300,8 +295,7 @@ def check_features(args):
         if not os.path.exists(f):
             continue
         a = np.load(f)
-        p = np.exp(a["letter"] - a["letter"].max(1, keepdims=True))
-        p /= p.sum(1, keepdims=True)
+        p = tempered(a["letter"], 1.0)
         for qid, pi in zip(a["qid"].tolist(), p):
             r = rows[(vid, qid)]
             same += int(np.argmax(pi)) == r["pred"]
@@ -321,7 +315,7 @@ def load_features(set_name, smoke=False):
         f = feature_file(set_name, vid, smoke)
         if not os.path.exists(f):
             continue
-        a = np.load(f)
+        a = dict(np.load(f))  # read each member once, not once per question
         for j, qid in enumerate(a["qid"].tolist()):
             L = int(a["length"][j])
             out.append({"video_id": vid, "qid": qid, "hidden": a["hidden"][j, :L], "spans": a["spans"][j, :, :L],

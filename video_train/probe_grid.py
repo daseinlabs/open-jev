@@ -241,7 +241,7 @@ def load_split(set_name, sources, limit_videos=0):
     for vid in vids:
         if limit_videos and not all(os.path.exists(f) for f in files(vid)):
             continue
-        tf = np.load(probe.feature_file("text", vid))
+        tf = dict(np.load(probe.feature_file("text", vid)))  # read each member once
         idx = {int(q): i for i, q in enumerate(tf["qid"])}
         for s in sources:
             f = np.load(feature_file(s, vid))

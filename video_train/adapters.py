@@ -23,7 +23,6 @@ import mlx.nn as nn
 from mlx.utils import tree_flatten
 
 from openjev.adapter_scope import VIDEO, active_adapter, adapter_scope, request_scope, run_scoped  # noqa: F401
-from openjev.adapter_scope import _ACTIVE
 
 
 class SwitchLoRALinear(nn.Module):
@@ -41,7 +40,7 @@ class SwitchLoRALinear(nn.Module):
 
     def __call__(self, x):
         y = self.base(x)
-        name = _ACTIVE.get()
+        name = active_adapter()
         if name is None:
             return y
         ad = self.adapters.get(name)

@@ -495,6 +495,63 @@ Full report: `results/step11/summary.md` on the drive.
   not carry over to s8_A_ep2's features; the expected mismatch cost was larger than the gain.
 - **Model for step 12: s8_A_ep2 with T = 1.523.**
 
+## Step 12: the one test-set evaluation (design fixed 2026-11-05, before any test result)
+
+`video_train/final_test.py` (`run`, or one stage: `check`, `score`, `report`); tests in
+`tests/test_final_test.py`. The test split (2,000 questions, 562 videos, split by video from
+validation; no step has read it) is scored once, here.
+
+- **Model: s8_A_ep2 with T = 1.523** (steps 8 and 11). Also zero-shot (`video140`, same format, no
+  adapter), so the gain is measured on test too. Both on fresh video decodes (the serving path:
+  `evaluate.py run --adapter`), 16 frames, video layout, 140 tokens per frame.
+- **Precision: MLX 8-bit, changed 2026-11-05 from the torch bf16 planned at step 0.** The torch
+  backend cannot load the MLX LoRA adapter, and porting it is a project of its own. Every dev
+  number came from MLX 8-bit, so test now measures the same model as dev. Cost: no independent
+  check that 8-bit does not shift accuracy for the trained model; the step 0 gate (98.9% agreement
+  with torch bf16 on decided base-model questions) is the only evidence, and it was for the base
+  model.
+- **Check before test (`check`):** s8_A_ep2 on 20 dev videos through the fresh-decode path must
+  give the same answer as its dev rows (cached features) on ≥ 98% of questions, else stop.
+- **Guard:** `evaluate.py` refuses `--set test` unless called with `--final` (only this script
+  passes it). Rows are resumable, but nothing is re-scored or tuned after the report.
+- **Reported, nothing gated:** accuracy ± 95% CI, NLL, Brier, ECE and confidence ≥ 0.8
+  coverage / accuracy, raw and with T; by area; paired against zero-shot; next to dev; latency
+  (model compute only) and decode separately. Reference: d3-mini 70.3% (self-reported, on its
+  own test protocol; ~71% on our dev in step 4). If test and dev accuracy differ by more than dev's
+  resolution (~2 points), say so; it is not a reason to change anything.
+- **Cost (estimate):** ~1 s per question model + ~1.5 s per video decode: ~50 min per model,
+  ~2 h total with the check. Run: `caffeinate -i .venv/bin/python -m video_train.final_test run`.
+
+### Step 12: results (done, 2026-11-06)
+
+Full report: `results/step12/summary.md` on the drive. **Check passed:** 68 of 68 dev questions
+(20 videos) gave the same answer through the fresh-decode path, probabilities identical.
+
+| test (n = 2,000) | accuracy | NLL | Brier | ECE | conf ≥ 0.8: cov / acc | latency (model) | decode |
+|---|---|---|---|---|---|---|---|
+| zero-shot | 54.4% ± 2.2% | 1.531 | 0.700 | 0.297 | 65% / 62.8% | 2.03 s | 0.65 s |
+| s8_A_ep2 | 71.8% ± 2.0% | 0.612 | 0.362 | 0.076 | 56% / 90.5% | 3.41 s | 0.61 s |
+| **s8_A_ep2 + T** | 71.8% ± 2.0% | 0.579 | 0.350 | 0.027 | 43% / 94.5% | 3.41 s | 0.61 s |
+
+| area | n | zero-shot | s8_A_ep2 |
+|---|---|---|---|
+| abstraction | 572 | 41.8% | 59.3% |
+| memory | 86 | 43.0% | 62.8% |
+| physics | 717 | 49.9% | 70.2% |
+| semantics | 625 | 72.5% | 86.2% |
+
+- **Gain over zero-shot holds on test:** +17.4 points; 522 gained, 174 lost (McNemar
+  p = 9.9e-40). Every area gains 14-21 points.
+- **Test vs dev:** 71.8% vs 73.5% (-1.8 points), within dev's ~2-point resolution; zero-shot
+  54.4% vs 54.7%. ECE with T 0.027 on test vs 0.020 cross-fitted on dev, so the dev temperature
+  carries over.
+- **Against d3-mini:** 71.8% vs its self-reported 70.3% (its own protocol; ~71% on our dev,
+  step 4). Comparable, not a clean win: the protocols differ and the gap is inside the CI.
+- **Latency:** 3.41 s per question with the adapter vs 2.03 s zero-shot (model compute only,
+  fresh decodes), above the ~1 s estimate. Not investigated.
+- **Not done:** no torch bf16 cross-check (see the precision change above), so step 0's
+  "MLX dev vs torch test" watch item cannot be checked.
+
 ## Latency
 
 Per-question latency = model compute only (vision encoder + prompt + questions, divided over

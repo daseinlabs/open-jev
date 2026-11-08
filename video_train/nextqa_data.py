@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import os
 import random
@@ -24,6 +23,7 @@ from collections import Counter, defaultdict
 
 from . import storage
 from .history import log_run
+from .perception_data import sha256_file
 
 ANN_URL = "https://raw.githubusercontent.com/doc-doc/NExT-QA/main/dataset/nextqa/{}"
 ANN_SHA256 = {"val.csv": "43198bdef8436b8d64a9b75d846b0987c10cbf94ebf4be325c4a4e54634d66b8"}
@@ -55,7 +55,7 @@ def fetch(args):
         if not os.path.exists(ann_path(name)):
             with urllib.request.urlopen(ANN_URL.format(name), timeout=60) as r, open(ann_path(name), "wb") as f:
                 f.write(r.read())
-        got = hashlib.sha256(open(ann_path(name), "rb").read()).hexdigest()
+        got = sha256_file(ann_path(name))
         if got != sha:
             raise SystemExit(f"checksum mismatch for {name}: {got}")
     rows = load_val()
@@ -119,7 +119,7 @@ def manifest(args):
         n += len(by_video[v])
     sub_rows = [r for v in sorted(sub) for r in by_video[v]]
     with storage.drive_guard():
-        for name, rs in ((f"nextqa_val", out), (f"nextqa_val{args.subset}", sub_rows)):
+        for name, rs in (("nextqa_val", out), (f"nextqa_val{args.subset}", sub_rows)):
             with open(storage.path("manifests", f"{name}.jsonl"), "w") as f:
                 for r in rs:
                     f.write(json.dumps(r) + "\n")

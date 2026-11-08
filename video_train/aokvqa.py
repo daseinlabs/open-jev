@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import io
 import json
 import math
@@ -27,9 +26,11 @@ import urllib.request
 import numpy as np
 
 from . import storage
+from .evaluate import _ece
 from .history import log_run
 from .inputs import LETTERS
 from .models import CONFIG, local_model
+from .perception_data import sha256_file
 
 URL = ("https://huggingface.co/datasets/HuggingFaceM4/A-OKVQA/resolve/d1b0efa3a436e9101dfbde3752db7607da696c35/"
        "data/validation-00000-of-00001-b2bd0de231b6326a.parquet")
@@ -56,7 +57,7 @@ def fetch(args):
         with storage.drive_guard(), urllib.request.urlopen(URL, timeout=120) as r, open(p + ".part", "wb") as f:
             f.write(r.read())
         os.replace(p + ".part", p)
-    sha = hashlib.sha256(open(p, "rb").read()).hexdigest()
+    sha = sha256_file(p)
     if sha != SHA256:
         raise SystemExit(f"checksum mismatch for {p}: {sha}")
     import pyarrow.parquet as pq
@@ -134,13 +135,6 @@ def run(args):
 def _load(tag, n):
     with storage.drive_guard():
         return {r["question_id"]: r for r in map(json.loads, open(result_path(tag, n)))}
-
-
-def _ece(conf, correct, bins=10):
-    conf, correct = np.asarray(conf), np.asarray(correct, float)
-    idx = np.minimum((conf * bins).astype(int), bins - 1)
-    return float(sum(abs(correct[idx == b].mean() - conf[idx == b].mean()) * (idx == b).mean()
-                     for b in range(bins) if (idx == b).any()))
 
 
 def stats(rows):

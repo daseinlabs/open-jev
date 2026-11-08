@@ -58,6 +58,7 @@ import numpy as np
 
 from . import storage
 from .history import log_run
+from .perception_data import load_manifest
 
 STEP = "step9"
 GEMMA_CACHE = "video140"  # step 6's features
@@ -95,8 +96,7 @@ def _save_npz(path, **arrays):
 
 
 def _questions(set_name):
-    with storage.drive_guard():  # evaluate.load_set knows only the eval sets
-        return [json.loads(l) for l in open(storage.path("manifests", f"{set_name}.jsonl"))]
+    return load_manifest(set_name)  # evaluate.load_set knows only the eval sets
 
 
 def _first_videos(limit):
@@ -372,7 +372,7 @@ def load_split(set_name, sources, limit_videos=0):
     for vid in vids:
         if limit_videos and not all(os.path.exists(feature_file(s, vid)) for s in ["text", *sources]):
             continue
-        tf = np.load(feature_file("text", vid))
+        tf = dict(np.load(feature_file("text", vid)))  # read each member once
         idx = {int(q): i for i, q in enumerate(tf["qid"])}
         for s in sources:
             f = np.load(feature_file(s, vid))

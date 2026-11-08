@@ -46,14 +46,14 @@ from . import frame_select, storage
 from .history import log_run
 from .inputs import LETTERS
 from .models import CONFIG, local_model
+from .perception_data import load_manifest
 
-SETS = {"dev": "dev", "nextqa": "nextqa_val1000", "precision": "dev"}
+SETS = {"dev": "dev", "nextqa": "nextqa_val1000", "precision": "dev", "test": "test"}  # test: step 12 only (--final)
 PRECISION_QUESTIONS = 102
 
 
 def load_set(name):
-    with storage.drive_guard():
-        rows = [json.loads(l) for l in open(storage.path("manifests", f"{SETS[name]}.jsonl"))]
+    rows = load_manifest(SETS[name])
     if name == "precision":
         from .precision_check import questions
         keep = {(q["video_id"], q["qid"]) for q in questions(PRECISION_QUESTIONS)}
@@ -83,6 +83,8 @@ def run(args):
     from . import mlx_model as mm
     from .inputs import Gemma4Inputs
 
+    if args.set == "test" and not args.final:
+        raise SystemExit("the test split is scored once, by step 12: python -m video_train.final_test run")
     storage.require_root()
     awake = storage.keep_awake()
     rows = load_set(args.set)
@@ -302,6 +304,17 @@ def report(args):
             {k: {kk: vv for kk, vv in v.items() if not isinstance(vv, dict)} for k, v in res.items()})
 
 
+def fresh_check(reference, check_tag, adapter, step, n_videos):
+    """Score ``reference``'s adapter on ``n_videos`` dev videos through fresh decodes; exit 2 below 98% agreement."""
+    storage.require_root()
+    # --limit-videos counts videos still to score, so a rerun asks only for the missing ones
+    done = len({v for v, _ in load_results("dev", check_tag)}) if os.path.exists(result_path("dev", check_tag)) else 0
+    if done < n_videos:
+        main(["run", "--set", "dev", "--tag", check_tag, "--soft-tokens", "140", "--adapter", adapter,
+              "--limit-videos", str(n_videos - done), "--step", step])
+    main(["agree", "--set", "dev", "--a", reference, "--b", check_tag, "--step", step])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -320,6 +333,7 @@ def main(argv=None):
     r.add_argument("--limit-videos", type=int, default=0, help="timing sample")
     r.add_argument("--adapter", default=None, help="LoRA adapter dir (saved by save_adapter), applied to every question")
     r.add_argument("--step", default="step2")
+    r.add_argument("--final", action="store_true", help=argparse.SUPPRESS)  # step 12 only: allows --set test
     a = sub.add_parser("agree")
     a.add_argument("--set", choices=SETS, required=True)
     a.add_argument("--a", required=True)

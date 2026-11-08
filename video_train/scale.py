@@ -56,14 +56,8 @@ def _evaluate(argv):
 
 
 def check(args):
-    from .evaluate import load_results, result_path
-    storage.require_root()
-    # --limit-videos counts videos still to score, so a rerun asks only for the missing ones
-    done = len({v for v, _ in load_results("dev", CHECK_TAG)}) if os.path.exists(result_path("dev", CHECK_TAG)) else 0
-    if done < CHECK_VIDEOS:
-        _evaluate(["run", "--set", "dev", "--tag", CHECK_TAG, "--soft-tokens", "140", "--adapter", adapter_dir(S7),
-                   "--limit-videos", str(CHECK_VIDEOS - done), "--step", STEP])
-    _evaluate(["agree", "--set", "dev", "--a", S7, "--b", CHECK_TAG, "--step", STEP])  # exits 2 below 98%
+    from .evaluate import fresh_check
+    fresh_check(S7, CHECK_TAG, adapter_dir(S7), STEP, CHECK_VIDEOS)
 
 
 def nextqa(tag):
