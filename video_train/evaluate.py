@@ -78,13 +78,13 @@ def load_results(set_name, tag):
 
 
 def run(args):
+    if args.set == "test" and not args.final:
+        raise SystemExit("the test split is scored once, by step 12: python -m video_train.final_test run")
     import mlx.core as mx
     from openjev.video import load_video
     from . import mlx_model as mm
     from .inputs import Gemma4Inputs
 
-    if args.set == "test" and not args.final:
-        raise SystemExit("the test split is scored once, by step 12: python -m video_train.final_test run")
     storage.require_root()
     awake = storage.keep_awake()
     rows = load_set(args.set)

@@ -12,8 +12,7 @@ import unittest
 try:
     import mlx.core as mx
     from mlx.utils import tree_flatten, tree_unflatten
-    from tests.test_mlx_grouping import HIDDEN, IMG, tiny_model
-    HAVE_MLX = True
+    from tests.test_mlx_grouping import HAVE_MLX, HIDDEN, IMG, tiny_model
 except ImportError:
     HAVE_MLX = False
 
