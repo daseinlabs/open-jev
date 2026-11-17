@@ -113,6 +113,12 @@ chess LoRA training workflow still require MLX on Apple silicon. The Doom termin
 also has its own platform dependencies; cross-platform support here covers the
 scoring CLI and HTTP server.
 
+Video (Gemma 4 E4B) is MLX-only for now. Video training, evaluation and the video
+LoRA adapter (`video_train/`) run on MLX, and the adapter is applied per request, only
+to requests that contain video; text and image requests use the base weights. The
+PyTorch backend can still score zero-shot frames (`docs/video.md`), but it cannot load the
+video adapter.
+
 ### Apple silicon / existing Make workflow
 
 ```sh
@@ -319,6 +325,7 @@ same split. If Gemma zero-shot is close to the trained head, Route B is enough; 
 
 - `openjev/torch_backend.py`: PyTorch CPU/GPU inference and shared-prefix KV cache scoring.
 - `openjev/scorer.py`: `OptionScorer` (prefill, cache expansion, batched scoring, naive reference).
+- `openjev/video.py`: video loading (path, URL, base64) and uniform frame sampling for image input (torch backend).
 - `openjev/systemone.py`: System One request/answer models, prompt renderers, zero-shot answers.
 - `openjev/server.py`: FastAPI app, `/health`, `/score`, `/v1/systemone`.
 - `openjev/features.py`: frozen-Gemma feature extraction and the `.npz` feature cache.
@@ -326,6 +333,10 @@ same split. If Gemma zero-shot is close to the trained head, Route B is enough; 
 - `openjev/head.py`, `openjev/head_torch.py`: jevlike's cross-attention head in `mlx.nn` and `torch.nn`; the saved weights load in either.
 - `openjev/train.py`: head training loop and evaluation (top-k, ECE, shuffled-context control).
 - `openjev/cli.py`: `openjev score | eval | bench | check | serve | features | train | eval-head`.
+- `video_eval/`: Perception Test multiple-choice eval for video input (see `docs/video.md`).
+- `video_train/`: video LoRA pipeline on MLX: datasets and manifests, evals, training, and the
+  per-request video adapter (`video_train/adapters.py`). Data lives on an external drive
+  (`OPENJEV_VIDEO_DATA`); `python -m video_train.models` stages model weights from it.
 - `demo/doom/`: Doom in the terminal, the server picks every action (`make doom`).
 - `models/`: downloaded weights (git-ignored).
 
