@@ -43,3 +43,6 @@ build/
 .env
 .env.*
 graphify-out/
+
+# Perception Test videos and annotations (video_eval)
+data/perception_test/
