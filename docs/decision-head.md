@@ -27,7 +27,7 @@ A native example has the same representation for training and inference:
 
 Candidate IDs, example IDs, group IDs, and targets never enter the encoder. Only state, question, and candidate texts supply model features. Objects are serialized with sorted keys and compact JSON. The rendering recipe is versioned and saved with the artifact. Exact utility ties use lexicographic candidate ID ordering for deterministic selection; IDs otherwise have no effect on scores.
 
-[Example inference request](../examples/decision-choice.json) illustrates the schema, not an assertion that a head trained on another task can route support requests correctly.
+[Example inference request](https://github.com/daseinlabs/open-jev/blob/main/examples/decision-choice.json) illustrates the schema, not an assertion that a head trained on another task can route support requests correctly.
 
 ## Train from native JSONL
 

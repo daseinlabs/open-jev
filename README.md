@@ -10,6 +10,45 @@ option in a single padded forward pass. No decoding. The score is the
 log-probability of the option tokens given the context; a softmax over the
 option scores gives a probability per option, like `jevlike-predict`.
 
+## Train a decision model on your own data
+
+`openjev.tod` fine-tunes task-oriented decision models on your data. A decision model picks
+one option from a list your code supplies (which tool, which order, which team), reports a
+calibrated confidence, and defers to a bigger model when unsure. Three methods:
+
+- `--method tod` fine-tunes [TOD](https://huggingface.co/parsecai/tod) (Gemma 4 12B + LoRA) on an
+  NVIDIA GPU with 40 GB+ (PyTorch). On cookbook 01 it takes TOD from 84.2% / 66.3% zero-shot to
+  97.0% / 100% (team / priority).
+- `--method head` (default) trains small heads on a frozen Gemma 3 4B: ~9 GB GPU (PyTorch) or
+  any Apple silicon Mac (MLX).
+- `--method encoder` fully fine-tunes any Hugging Face model (default ModernBERT-large) with a
+  per-candidate head, on one or several GPUs (`torchrun`), and serves on CPU. It also trains
+  `Subset` targets: keep any set of the candidates, e.g. the retrieved passages worth sending
+  to the generator, at an operating point chosen for a target survival rate.
+
+Install with `pip install openjev-sdk`.
+
+```python
+from openjev.tod import Candidate, DecisionSpec, Episode, Kind, build_dataset
+
+TEAMS = {'billing': 'Billing and refunds', 'shipping': 'Delivery and tracking'}
+spec = DecisionSpec('routing', [Kind('team', 'Which team should handle this?',
+    lambda state: [Candidate(k, v, payload=k) for k, v in TEAMS.items()], version='1')])
+episodes = [Episode(t['id'], (spec.decision(t['id'], 'team', {'message': t['text']}, choice=t['team']),))
+            for t in tickets]
+build_dataset(spec, episodes).write('runs/routing')
+```
+
+```bash
+openjev tod train runs/routing --method tod --out runs/routing-model   # fine-tune TOD (fetched on first use)
+```
+
+Chat traces, RL in a simulator, deriving the spec from your tool schemas, and keep/drop
+filters with `--method encoder` are covered in the
+[SDK guide](https://github.com/daseinlabs/open-jev/blob/main/docs/tod-sdk.md); the
+[cookbooks](https://github.com/daseinlabs/open-jev/tree/main/cookbooks) walk through routing,
+chat traces to RL, your own traces, and a SQL assistant end to end.
+
 ## Demo: Doom in the terminal
 
 `demo/doom/` runs ViZDoom headless, describes each frame in a line of text, and
@@ -17,7 +56,7 @@ lets the server rank the action menu with one `/score` call (or one System One
 `choice` question). Start `make serve`, then `make doom`. Details and keys in
 [`demo/doom/README.md`](demo/doom/README.md).
 
-![openjev playing Doom in the terminal: the model ranks the action menu each step](docs/media/doom-recording.gif)
+![openjev playing Doom in the terminal: the model ranks the action menu each step](https://raw.githubusercontent.com/daseinlabs/open-jev/main/docs/media/doom-recording.gif)
 
 Full-resolution recording: [docs/media/doom-recording.mov](docs/media/doom-recording.mov).
 
@@ -67,9 +106,10 @@ context length if you run out of GPU memory. CPU runs use float32 and need more 
 Use original Hugging Face weights with PyTorch; MLX quantized weights and MLX LoRA
 adapters are not supported by this backend.
 
-Scoring, evaluation, benchmarks, correctness checks, and both HTTP scoring endpoints
-support PyTorch. Frozen-feature extraction, head training/evaluation, and the chess
-LoRA training workflow still require MLX on Apple silicon. The Doom terminal UI
+Scoring, evaluation, benchmarks, correctness checks, both HTTP scoring endpoints,
+frozen-feature extraction, head training and evaluation, `openjev decision`, and
+`openjev tod` (including RL) support PyTorch. Contextual features (`--contextual`) and the
+chess LoRA training workflow still require MLX on Apple silicon. The Doom terminal UI
 also has its own platform dependencies; cross-platform support here covers the
 scoring CLI and HTTP server.
 
@@ -191,13 +231,13 @@ validation, feature and artifact fingerprints, held-out evaluation against
 continuation scoring, and candidate-order/repeated-request checks.
 
 See [the native decision-head guide](docs/decision-head.md) for data formats and
-commands. This training/inference path currently uses MLX on Apple silicon.
+commands. It runs on MLX or PyTorch (`OPENJEV_BACKEND=mlx|torch`, `OPENJEV_DEVICE=cuda|mps|cpu`).
 
 ## Training a head (per-task, on frozen Gemma features)
 
 ```sh
 make features    # one prefix-shared pass per example, cached to runs/feats/{train,validation,test}.npz
-make train       # jevlike's cross-attention head in MLX, listwise cross-entropy -> runs/head.safetensors
+make train       # jevlike's cross-attention head (MLX or PyTorch), listwise cross-entropy -> runs/head.safetensors
 make eval-head   # top-1/top-3, ECE, and the shuffled-context control on the test split
 ```
 
@@ -289,7 +329,8 @@ same split. If Gemma zero-shot is close to the trained head, Route B is enough; 
 - `openjev/systemone.py`: System One request/answer models, prompt renderers, zero-shot answers.
 - `openjev/server.py`: FastAPI app, `/health`, `/score`, `/v1/systemone`.
 - `openjev/features.py`: frozen-Gemma feature extraction and the `.npz` feature cache.
-- `openjev/head.py`: jevlike's cross-attention head in `mlx.nn`, save/load.
+- `openjev/compute.py`: backend selection (MLX or PyTorch) for features, heads and training.
+- `openjev/head.py`, `openjev/head_torch.py`: jevlike's cross-attention head in `mlx.nn` and `torch.nn`; the saved weights load in either.
 - `openjev/train.py`: head training loop and evaluation (top-k, ECE, shuffled-context control).
 - `openjev/cli.py`: `openjev score | eval | bench | check | serve | features | train | eval-head`.
 - `video_eval/`: Perception Test multiple-choice eval for video input (see `docs/video.md`).

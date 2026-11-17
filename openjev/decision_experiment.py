@@ -108,24 +108,21 @@ def validate_cache(path, data, tasks, split):
 
 def score_cached(artifact, cache, tasks, batch_size=64):
     """Score checked frozen features using the artifact's normal attention head."""
-    from .decision_mlx import inspect_features, require_mlx
+    from . import compute
+    from .decision_mlx import inspect_features
     meta, manifest = inspect_features(cache), read_artifact(artifact)
     if meta['signature_sha256'] != digest(manifest['feature_signature']) or meta['provenance'] != provenance(tasks):
         raise ValueError('cache/artifact/task feature contract mismatch')
-    require_mlx()
-    import mlx.core as mx
     from .features import FeatureSet
-    from .head import AttentionHead
+    ops = compute.ops()
     fs = FeatureSet(str(cache))
-    head, _ = AttentionHead.load(str(Path(artifact)/'head.safetensors'))
-    head.eval()
+    head, _ = ops.AttentionHead.load(str(Path(artifact)/'head.safetensors'))
     artifact_id = file_digest(Path(artifact)/'manifest.json')
     results = []
     for start in range(0, len(tasks), batch_size):
         indices = list(range(start, min(start+batch_size, len(tasks))))
         ctx, cm, opt, om, _ = fs.batch(indices)
-        logits = head(ctx, cm, opt, om)
-        mx.eval(logits)
+        logits = ops.forward(head, ctx, cm, opt, om)
         for i, row in zip(indices, logits.tolist()):
             result = choice_result(tasks[i], row[:len(tasks[i].candidates)])
             result['artifact_id'] = artifact_id

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemma plays 2048</title>
+<style>
+:root {
+  --bg: #f6f4ef; --panel: #ffffff; --ink: #1f2328; --muted: #6b7078; --line: #e4e0d8;
+  --board: #bbada0; --cell: #cdc1b4; --accent: #2563eb; --accent-soft: #dbe6fd;
+  --good: #15803d; --bad: #b42318; --bar: #d6d9de;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15171a; --panel: #1e2125; --ink: #e8eaed; --muted: #9aa0a6; --line: #2e3237;
+          --board: #6b6157; --cell: #857a6f; --accent: #6b9bff; --accent-soft: #23314f;
+          --good: #4ade80; --bad: #f87171; --bar: #33373d; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+header { padding: 20px 28px 8px; }
+h1 { margin: 0; font-size: 22px; }
+header p { margin: 4px 0 0; color: var(--muted); }
+main { display: grid; grid-template-columns: minmax(320px, 460px) minmax(320px, 1fr);
+       gap: 24px; padding: 16px 28px 28px; align-items: start; }
+@media (max-width: 820px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 16px 16px 4px; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.stat { background: var(--bg); border-radius: 10px; padding: 8px 12px; }
+.stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.board { position: relative; background: var(--board); border-radius: 10px; padding: 10px;
+         display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; aspect-ratio: 1; }
+.tile { background: var(--cell); border-radius: 6px; display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: clamp(18px, 5vw, 34px); color: #776e65; transition: background .12s; }
+.tile.pop { animation: pop .22s ease-out; }
+@keyframes pop { 0% { transform: scale(.3); } 100% { transform: scale(1); } }
+.overlay { position: absolute; inset: 0; border-radius: 10px; background: rgba(238,228,218,.78);
+           display: none; flex-direction: column; align-items: center; justify-content: center; color: #776e65; }
+.overlay.show { display: flex; }
+.overlay b { font-size: 34px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+button, select, input { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+                        border-radius: 8px; padding: 7px 12px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 84px; }
+button:disabled { opacity: .5; cursor: default; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+label.speed { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+input[type=number] { width: 90px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 12px; }
+.phead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.phead h2 { margin: 0; }
+.seg.small button { padding: 4px 10px; font-size: 12px; }
+.probs { display: grid; gap: 10px; }
+.prow { display: grid; grid-template-columns: 28px 52px 1fr 64px; gap: 10px; align-items: center;
+        padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; }
+.prow.chosen { border-color: var(--accent); background: var(--accent-soft); }
+.prow.invalid { opacity: .45; }
+.arrow { font-size: 22px; text-align: center; }
+.pname { font-weight: 600; }
+.track { height: 14px; background: var(--bar); border-radius: 7px; overflow: hidden; }
+.fill { height: 100%; width: 0; background: var(--accent); border-radius: 7px; transition: width .2s; }
+.prow.invalid .fill { background: var(--muted); }
+.pct { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.tag { font-size: 11px; color: var(--muted); grid-column: 2 / 5; margin-top: -6px; }
+.decision { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bg); }
+.decision b { font-size: 18px; }
+.decision .note { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.warn { color: var(--bad); }
+.log { margin-top: 18px; }
+.log ol { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto;
+          border: 1px solid var(--line); border-radius: 10px; }
+.log li { display: grid; grid-template-columns: 52px 30px 64px 1fr 56px; gap: 6px; padding: 6px 10px;
+          border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; font-size: 14px; }
+.log li:last-child { border-bottom: 0; }
+.log .n { color: var(--muted); }
+.log .g { color: var(--good); text-align: right; }
+.explain { color: var(--muted); font-size: 13px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gemma plays 2048</h1>
+  <p>Each turn, openjev scores the four moves in one forward pass of Gemma 3 4B. The bars show the model's probabilities; it plays the most likely valid move.</p>
+</header>
+<main>
+  <section class="card">
+    <div class="stats">
+      <div class="stat"><span>Score</span><b id="score">0</b></div>
+      <div class="stat"><span>Moves</span><b id="moves">0</b></div>
+      <div class="stat"><span>Best tile</span><b id="maxtile">0</b></div>
+    </div>
+    <div class="board" id="board">
+      <div class="overlay" id="overlay"><b>Game over</b><span id="final"></span></div>
+    </div>
+    <div class="controls">
+      <div class="seg" id="player">
+        <button data-p="trained">Trained (RL)</button><button data-p="base">Base Gemma</button>
+      </div>
+      <button class="primary" id="play">Play</button>
+      <button id="step">Step</button>
+    </div>
+    <div class="controls">
+      <label class="speed">Speed <input type="range" id="speed" min="0" max="1500" step="50" value="300"> <span id="speedv"></span></label>
+      <input type="number" id="seed" placeholder="seed">
+      <button id="new">New game</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="phead">
+      <h2>What the model predicts</h2>
+      <div class="seg small" id="view">
+        <button data-t="1" class="on">Raw</button><button data-t="5">Softened (T=5, as in training)</button>
+      </div>
+    </div>
+    <div class="probs" id="probs"></div>
+    <div class="decision" id="decision"><b>Press Play or Step</b><div class="note">The model has not moved yet.</div></div>
+    <div class="log">
+      <h2>Move log</h2>
+      <ol id="log"></ol>
+    </div>
+    <p class="explain" id="explain"></p>
+  </section>
+</main>
+<script>
+const ARROW = {up: "↑", down: "↓", left: "←", right: "→"};
+const ACTIONS = ["up", "down", "left", "right"];
+const TILE = {2:["#eee4da","#776e65"],4:["#ede0c8","#776e65"],8:["#f2b179","#fff"],16:["#f59563","#fff"],
+  32:["#f67c5f","#fff"],64:["#f65e3b","#fff"],128:["#edcf72","#fff"],256:["#edcc61","#fff"],
+  512:["#edc850","#fff"],1024:["#edc53f","#fff"],2048:["#edc22e","#fff"]};
+let temp = 1, last = null;
+let playing = false, busy = false, player = "trained", hasAdapter = false;
+const $ = id => document.getElementById(id);
+
+function drawBoard(board, spawned) {
+  const el = $("board");
+  el.querySelectorAll(".tile").forEach(t => t.remove());
+  board.forEach((v, i) => {
+    const t = document.createElement("div");
+    t.className = "tile" + (i === spawned ? " pop" : "");
+    if (v) {
+      const [bg, fg] = TILE[v] || ["#3c3a32", "#fff"];
+      t.style.background = bg; t.style.color = fg; t.textContent = v;
+      if (v >= 1024) t.style.fontSize = "clamp(14px, 4vw, 26px)";
+    }
+    el.insertBefore(t, $("overlay"));
+  });
+}
+
+function soften(probs) {
+  if (!probs || temp === 1) return probs;
+  const w = Object.fromEntries(ACTIONS.map(a => [a, Math.pow(Math.max(probs[a], 1e-300), 1 / temp)]));
+  const z = ACTIONS.reduce((t, a) => t + w[a], 0);
+  return Object.fromEntries(ACTIONS.map(a => [a, w[a] / z]));
+}
+
+function drawProbs(rawProbs, chosen, valid) {
+  last = [rawProbs, chosen, valid];
+  const probs = soften(rawProbs);
+  $("probs").innerHTML = ACTIONS.map(a => {
+    const p = probs ? probs[a] : 0, inv = valid && !valid.includes(a);
+    const cls = "prow" + (a === chosen ? " chosen" : "") + (inv ? " invalid" : "");
+    const tag = inv ? '<div class="tag">invalid here (would not change the board)</div>'
+              : a === chosen ? '<div class="tag">chosen move</div>' : "";
+    return `<div class="${cls}"><div class="arrow">${ARROW[a]}</div><div class="pname">${a}</div>
+      <div class="track"><div class="fill" style="width:${(p * 100).toFixed(1)}%"></div></div>
+      <div class="pct">${probs ? (p * 100).toFixed(1) + "%" : "–"}</div>${tag}</div>`;
+  }).join("");
+}
+
+function drawStats(s) {
+  $("score").textContent = s.score; $("moves").textContent = s.moves; $("maxtile").textContent = s.max_tile;
+  $("overlay").classList.toggle("show", s.over);
+  $("final").textContent = s.over ? `score ${s.score} · best tile ${s.max_tile} · ${s.moves} moves` : "";
+  if (s.over) setPlaying(false);
+  $("step").disabled = s.over;
+}
+
+function setPlayer(p) {
+  player = p;
+  document.querySelectorAll("#player button").forEach(b => b.classList.toggle("on", b.dataset.p === p));
+  $("explain").textContent = p === "trained"
+    ? "Trained (RL): Gemma plus the LoRA weights learned by policy-gradient training on 2048."
+    : "Base Gemma: the same model with the LoRA switched off. It strongly prefers 'right' on almost every board.";
+}
+
+function setPlaying(on) {
+  playing = on; $("play").textContent = on ? "Pause" : "Play";
+  if (on) loop();
+}
+
+async function api(path, body) {
+  const r = await fetch(path, {method: body === undefined ? "GET" : "POST",
+    headers: {"content-type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)});
+  if (!r.ok) throw new Error(`server error ${r.status} on ${path} (see the terminal running rl_2048.web)`);
+  return r.json();
+}
+
+async function doStep() {
+  if (busy) return; busy = true;
+  try {
+    const s = await api("/api/step", {});
+    if (s.done) { drawStats(s); return; }
+    drawBoard(s.board, s.spawned); drawStats(s); drawProbs(s.probs, s.chosen, s.valid_before);
+    const pc = (soften(s.probs)[s.chosen] * 100).toFixed(1);
+    const override = s.top_choice !== s.chosen
+      ? `<div class="note warn">Its top pick was ${s.top_choice} (${(s.probs[s.top_choice]*100).toFixed(1)}%), which is invalid here, so it plays the most likely valid move.</div>` : "";
+    $("decision").innerHTML = `<b>${ARROW[s.chosen]} ${s.chosen}</b> &nbsp;with ${pc}% · ${s.gain ? "+" + s.gain + " points" : "no merge"}
+      <div class="note">Move ${s.moves} · scored in ${s.ms.toFixed(0)} ms</div>${override}`;
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="n">#${s.moves}</span><span>${ARROW[s.chosen]}</span><span>${s.chosen}</span>
+      <span>${pc}%</span><span class="g">${s.gain ? "+" + s.gain : ""}</span>`;
+    $("log").prepend(li);
+  } catch (e) {
+    setPlaying(false);
+    $("decision").innerHTML = `<b class="warn">Something went wrong</b><div class="note">${e.message}</div>`;
+  } finally { busy = false; }
+}
+
+async function loop() {
+  while (playing) {
+    await doStep();
+    await new Promise(r => setTimeout(r, +$("speed").value));
+  }
+}
+
+async function newGame() {
+  setPlaying(false);
+  while (busy) await new Promise(r => setTimeout(r, 50));
+  const seedVal = $("seed").value.trim();
+  const s = await api("/api/new", {seed: seedVal === "" ? null : +seedVal, player});
+  $("seed").value = s.seed; $("log").innerHTML = "";
+  drawBoard(s.board); drawStats(s); drawProbs(null, null, s.valid);
+  $("decision").innerHTML = `<b>New game (seed ${s.seed})</b><div class="note">Press Play or Step.</div>`;
+}
+
+document.querySelectorAll("#view button").forEach(b => b.onclick = () => {
+  temp = +b.dataset.t;
+  document.querySelectorAll("#view button").forEach(x => x.classList.toggle("on", x === b));
+  if (last) drawProbs(...last);
+});
+$("play").onclick = () => setPlaying(!playing);
+$("step").onclick = () => { setPlaying(false); doStep(); };
+$("new").onclick = newGame;
+$("speed").oninput = () => $("speedv").textContent = $("speed").value + " ms";
+document.querySelectorAll("#player button").forEach(b => b.onclick = () => {
+  if (b.dataset.p === "trained" && !hasAdapter) return;
+  setPlayer(b.dataset.p); newGame();
+});
+
+(async () => {
+  const s = await api("/api/info");
+  hasAdapter = !!s.adapter;
+  if (!hasAdapter) document.querySelector('#player [data-p="trained"]').disabled = true;
+  setPlayer(s.player); $("seed").value = s.seed; $("speed").oninput();
+  drawBoard(s.board); drawStats(s); drawProbs(null, null, s.valid);
+})();
+</script>
+</body>
+</html>

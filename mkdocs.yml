@@ -58,6 +58,7 @@ nav:
   - Guides:
       - CLI reference: cli.md
       - Training a head: training.md
+      - Decision-model SDK: tod-sdk.md
       - Video input: video.md
       - Video training plan: video-training-plan.md
       - Doom demo: doom-demo.md
