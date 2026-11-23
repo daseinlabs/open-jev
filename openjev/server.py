@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from .adapter_scope import run_scoped
 from .scorer import DEFAULT_MODEL, OptionScorer
 from .systemone import SystemOneRequest, SystemOneResponse, system_one
 
@@ -42,11 +43,13 @@ class ScoreResponse(BaseModel):
     timing: dict[str, float]
 
 
-def create_app(model_path: str | None = None, batch_size: int = 8, backend: str = "auto", device: str = "auto") -> FastAPI:
+def create_app(model_path: str | None = None, batch_size: int = 8, backend: str = "auto", device: str = "auto",
+               scorer: OptionScorer | None = None) -> FastAPI:
+    """``scorer``: an already-loaded scorer (tests); otherwise one is loaded at startup."""
     model_path = model_path or os.environ.get("OPENJEV_MODEL", DEFAULT_MODEL)
     adapter_path = os.environ.get("OPENJEV_ADAPTER")  # optional LoRA adapter dir
     app = FastAPI(title="openjev", version="0.1.0")
-    state: dict = {}
+    state: dict = {"scorer": scorer, "load_s": 0.0} if scorer is not None else {}
     api_key = os.environ.get("OPENJEV_API_KEY")  # if set, /v1/systemone requires "Authorization: Bearer <key>"
     model_name = os.path.basename(model_path.rstrip("/"))
 
@@ -56,6 +59,8 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
 
     @app.on_event("startup")
     def _load() -> None:
+        if "scorer" in state:
+            return
         t = time.perf_counter()
         scorer = OptionScorer(model_path, batch_size=batch_size, adapter_path=adapter_path, backend=backend, device=device)
         scorer.score("warm up", ["a", "b"])  # compile kernels before the first request
@@ -72,7 +77,9 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
         if scorer is None:
             raise HTTPException(503, "model still loading")
         try:
-            res = scorer.score(req.context, req.options, norm=req.norm, chat=req.chat, sep=req.sep)
+            # Text request: base weights (the video adapter is only for requests with video).
+            res = run_scoped(False, scorer.score, req.context, req.options, norm=req.norm, chat=req.chat,
+                             sep=req.sep)
         except ValueError as e:
             raise HTTPException(400, str(e))
         best = max(range(len(res)), key=lambda i: res[i].score)
@@ -90,7 +97,7 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
         if scorer is None:
             raise HTTPException(503, "model still loading")
         try:
-            return system_one(scorer, req, model_name=req.model or model_name)
+            return run_scoped(False, system_one, scorer, req, model_name=req.model or model_name)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
