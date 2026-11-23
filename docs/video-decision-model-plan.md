@@ -259,6 +259,11 @@ Temperature per task type; the `openjev decision` contract for video.
 ### Stage 8: final evaluation and demo
 Held-out test sets scored once; latency (model compute only) and decode reported separately;
 the team demo.
+- **Showcase reel (2026-11-23, branch `showcase`):** `python -m video_train.showcase --adapter
+  <stageB_ep1 dir>` plays held-out clips at real speed and feeds each 2-frame group to the model
+  as it plays (vision encoder + KV cache extension, ~0.6 s per group); the answer shows 0.6-1.5 s
+  after a 5-12 s clip ends. Live probabilities match the stored eval within 0.006. Output:
+  `vdm/showcase/<tag>_<set>_s<seed>.mp4` (seed 0, TrafficQA: 4 of 6 right).
 
 ## Training data candidates (for stage 2; not decided)
 
