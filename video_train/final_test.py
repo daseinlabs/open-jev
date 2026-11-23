@@ -1,4 +1,4 @@
-"""Step 12: the one test-set evaluation (design in docs/video-training-plan.md).
+"""Step 12: the one test-set evaluation.
 
     python -m video_train.final_test run            # check, then score test (zero-shot, s8_A_ep2), report
     python -m video_train.final_test check|score|report

@@ -4,7 +4,7 @@ import unittest
 import torch
 from transformers import Gemma4Config, Gemma4ForConditionalGeneration
 
-from openjev.torch_backend import TorchBackend
+from openjev.torch_backend import TorchBackend, video_kwargs
 
 IMG, VID, BOI, EOI, PATCH, POOL = 37, 40, 38, 39, 4, 2
 FRAME = 16
@@ -51,9 +51,9 @@ class TorchVideoGemma4Tests(unittest.TestCase):
 
     def hf(self, enc, extra=()):
         with torch.inference_mode():
-            return self.engine.model(input_ids=torch.tensor([enc['input_ids'] + list(extra)]),
-                                     pixel_values_videos=enc['pixel_values'][None],
-                                     video_position_ids=enc['position_ids'][None]).logits[0]
+            m = self.engine.model
+            return m(input_ids=torch.tensor([enc['input_ids'] + list(extra)]),
+                     **video_kwargs(m.forward, enc['pixel_values'], enc['position_ids'])).logits[0]
 
     def test_matches_hf_forward_for_any_chunking(self):
         enc = self.inputs(3)

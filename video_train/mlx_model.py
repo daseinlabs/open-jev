@@ -6,7 +6,7 @@ readout OpenJev scores with (single-token options, ``norm="sum"``).
 Two equivalent ways to score the questions of one video:
 - ``letter_logits``: one full sequence per question;
 - ``letter_logits_grouped``: the video prefix once, then every question as a batch that reuses
-  its KV cache. Gradients flow through the shared prefix (``video_train/check_grouping.py``
+  its KV cache. Gradients flow through the shared prefix (``tests/test_mlx_grouping.py``
   verifies loss and gradients match).
 """
 from __future__ import annotations

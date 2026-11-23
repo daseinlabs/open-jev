@@ -1,4 +1,4 @@
-"""Step 11: calibration and a decision head on s8_A_ep2 (design in docs/video-training-plan.md).
+"""Step 11: calibration and a decision head on s8_A_ep2.
 
     python -m video_train.decision_head run                    # every stage below, in order (resumable)
     python -m video_train.decision_head run --limit-videos 3   # smoke test (own adapters, cache, outputs)
@@ -36,7 +36,6 @@ import numpy as np
 from . import storage
 from .history import log_run
 from .perception_data import load_manifest
-from .probe import _by_video, _save_npz
 
 STEP = "step11"
 FULL = "s8_A_ep2"                                   # the model being calibrated / extended (checkpoints/step8)
@@ -50,6 +49,36 @@ P_WIN = 0.05
 SEEDS = (0, 1, 2)
 HP = {"width": 256, "heads": 4, "dropout": 0.2, "lr": 3e-4, "weight_decay": 0.05, "batch": 64,
       "epochs": 40, "patience": 5, "holdout": 0.1}
+
+
+def _save_npz(path, **arrays):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path[:-len(".npz")] + ".tmp.npz"
+    np.savez(tmp, **arrays)
+    os.replace(tmp, path)
+
+
+def _by_video(rows):
+    out = {}
+    for r in rows:
+        out.setdefault(r["video_id"], []).append(r)
+    return out
+
+
+def option_spans(prompt, n_options, offsets):
+    """Token indices (into ``offsets``) of each option's rendered text, in letter order."""
+    from .inputs import LETTERS
+    spans, pos = [], prompt.index("Options:\n")
+    for letter in LETTERS[:n_options]:
+        tag = f"- {letter}: "
+        start = prompt.index(tag, pos) + len(tag)
+        end = prompt.index("\n", start)
+        idx = [i for i, (a, b) in enumerate(offsets) if a < end and b > start]
+        if not idx:
+            raise ValueError(f"option {letter} has no tokens in {prompt!r}")
+        spans.append(idx)
+        pos = end
+    return spans
 
 
 def smoke_tag(tag, smoke):
@@ -215,7 +244,6 @@ def _todo(limit_videos):
 def question_tokens(enc, prompt, n_options):
     """(token ids of the question text after the video prefix, option spans as token indices)."""
     from .cache_features import suffix_ids
-    from .probe import option_spans
     t = enc.tok(prompt, add_special_tokens=False, return_offsets_mapping=True)
     ids = suffix_ids(enc, prompt)
     if list(t["input_ids"]) != list(ids):

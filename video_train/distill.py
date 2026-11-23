@@ -1,5 +1,5 @@
 """Step 7: target selection. LoRA on the language model, trained on cached features, three targets.
-(Step 8, `video_train.scale`, reuses `train` with `--step step8`.)
+(``train --step step8`` reuses it for step 8.)
 
     python -m video_train.distill prepare                      # question suffix ids, once
     python -m video_train.distill train --variant B --lr 1e-4  # one run: train, then score dev

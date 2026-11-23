@@ -2,6 +2,20 @@
 from __future__ import annotations
 
 import copy
+import inspect
+
+
+def video_kwargs(fn, pixel_values, position_ids):
+    """Gemma 4 video arguments of ``fn`` (``get_video_features`` or the model's forward) for one video.
+
+    transformers >= 5.24 takes the frames flat plus the frame count per video; earlier versions take
+    them with a leading video axis.
+    """
+    if "num_frames_per_video" in inspect.signature(fn).parameters:
+        import torch
+        return {"pixel_values_videos": pixel_values, "video_position_ids": position_ids,
+                "num_frames_per_video": torch.tensor([len(pixel_values)])}
+    return {"pixel_values_videos": pixel_values[None], "video_position_ids": position_ids[None]}
 
 
 class TorchBackend:
@@ -183,7 +197,8 @@ class TorchBackend:
                 for pv, pos in zip(pixel_values.split(frame_batch), position_ids.split(frame_batch)):
                     pv, pos = pv.to(self.device, self.vision_dtype), pos.to(self.device)
                     if self.frame_mode == "video":
-                        out = self.model.model.get_video_features(pv[None], pos[None], return_dict=True)
+                        fn = self.model.model.get_video_features
+                        out = fn(**video_kwargs(fn, pv, pos), return_dict=True)
                     else:
                         out = self.model.model.get_image_features(pv, pos, return_dict=True)
                     feats.append(torch.cat(out.pooler_output).reshape(len(pv), -1, out.pooler_output[0].shape[-1]))

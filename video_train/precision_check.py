@@ -33,7 +33,7 @@ from .perception_data import load_manifest, manifest_path
 BACKENDS = {"torch-bf16": "gemma-4-E4B-it", "mlx-8bit": "gemma-4-E4B-it-mlx-8bit",
             "mlx-4bit": "gemma-4-E4B-it-mlx-4bit"}  # model names; staged from the drive when missing
 TOKENIZER = CONFIG
-# Gate (amended 2026-10-16, docs/video-training-plan.md): MLX 8-bit must agree with torch bf16 on
+# Gate (amended 2026-10-16): MLX 8-bit must agree with torch bf16 on
 # >= 98% of the questions torch decides by a margin >= DECIDED, and must not shift P(correct)
 # by more than MAX_SHIFT on average. Near-ties (incl. exact bf16 ties in torch) are excluded.
 AGREE, DECIDED, MAX_SHIFT = 0.98, 0.1, 0.01

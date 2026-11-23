@@ -1,4 +1,5 @@
 """Step 11: video folds, temperature fitting, which adapter reads which question, the head's start."""
+import importlib.util
 import unittest
 from unittest import mock
 
@@ -16,6 +17,8 @@ try:
     HAVE_TORCH = True
 except ImportError:
     HAVE_TORCH = False
+
+HAVE_SCIPY = importlib.util.find_spec("scipy") is not None  # temperature fitting
 
 
 def _rows(n_videos=40, per_video=3, T_true=2.0, seed=0):
@@ -70,7 +73,7 @@ class FoldTests(unittest.TestCase):
         self.assertEqual(len(h), 100)
 
 
-@unittest.skipUnless(HAVE_MLX, "needs mlx")
+@unittest.skipUnless(HAVE_MLX and HAVE_SCIPY, "needs mlx and scipy")
 class TemperatureTests(unittest.TestCase):
     def test_fit_recovers_the_overconfidence(self):
         rows = _rows(n_videos=800, T_true=2.0)
