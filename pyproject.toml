@@ -25,7 +25,6 @@ doom = ["vizdoom>=1.2.4"]                         # demo/doom: play Doom in the 
 video = ["av>=14", "pillow>=11"]                   # openjev.video frame sampling and video_eval/ (image input runs on the torch backend)
 video-train = ["mlx-vlm[train]==0.7.8; sys_platform == 'darwin' and platform_machine == 'arm64'"]  # video LoRA training on MLX (pinned: weekly releases)
 parity = ["torchvision"]                            # official Gemma 4 processor for tests/test_gemma4_processor_parity.py only
-game = ["panda3d==1.10.16"]                        # openworld/: first-person open-world game (video decision model, stage 4)
 
 
 [project.scripts]

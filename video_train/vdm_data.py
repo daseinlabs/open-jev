@@ -3,7 +3,8 @@
     python -m video_train.vdm_data bench          # never-trained-on benchmark manifests (from parquet)
     python -m video_train.vdm_data fetch-bench    # their videos (Video-MME short 3.1 GB, TempCompass 0.4 GB)
     python -m video_train.vdm_data mix            # stage 2 training mix -> vdm/manifests/train_mix.jsonl
-    python -m video_train.vdm_data overlap        # no eval video in the mix (exit 2 if any)
+    python -m video_train.vdm_data stageb         # Stage B mix -> vdm/manifests/stageB_mix.jsonl
+    python -m video_train.vdm_data overlap [--mix vdm/manifests/stageB_mix.jsonl]  # no eval video in the mix (exit 2 if any)
     python -m video_train.vdm_data extract        # videos of every eval set and the mix -> vdm/videos/
 
 Prompt formats (``turns``) live here so evaluation and training see the same text:
@@ -50,15 +51,21 @@ LLAVA = "30_60_s_youtube_v0_1"
 
 # Every evaluation set: name -> manifest (relative to DATA_ROOT). Test sets are only for the final run.
 DEV = {"perception_dev": "manifests/dev.jsonl", "nextqa_dev": "manifests/nextqa_val1000.jsonl",
-       **{f"{d}_dev": f"vdm/manifests/{d}_dev.jsonl" for d in ("star", "charades_sta", "clevrer", "llava_video")}}
+       **{f"{d}_dev": f"vdm/manifests/{d}_dev.jsonl" for d in ("star", "charades_sta", "clevrer", "llava_video", "trafficqa")}}
 BENCH = {"videomme_short": "vdm/manifests/videomme_short.jsonl", "tempcompass_mc": "vdm/manifests/tempcompass_mc.jsonl"}
 TEST = {"perception_test": "manifests/test.jsonl",
-        **{f"{d}_test": f"vdm/manifests/{d}_test.jsonl" for d in ("nextqa", "star", "charades_sta", "clevrer", "llava_video")}}
+        **{f"{d}_test": f"vdm/manifests/{d}_test.jsonl" for d in ("nextqa", "star", "charades_sta", "clevrer", "llava_video", "trafficqa")}}
 EVAL = {**DEV, **BENCH, **TEST}
 
 # Stage 2 mix (plan, 2026-11-09): questions per source and the most taken from one video.
 MIX = {"perception_test": (None, None), "nextqa": (7500, 3), "star": (7000, 4), "clevrer": (6000, 4),
        "charades_sta": (3000, 3), "llava_video": (6000, 4)}
+TRAIN_MIX = "vdm/manifests/train_mix.jsonl"
+
+# Stage B mix (plan, 2026-11-21): TrafficQA pool videos (<= 4 questions each, types in turn)
+# + Stage A replay (whole packed videos of the Stage A mix), ~20% of the videos.
+STAGEB_MIX = "vdm/manifests/stageB_mix.jsonl"
+STAGEB = {"trafficqa_videos": 4000, "cap": 4, "replay_videos": 1000}
 
 
 def rows(rel):
@@ -80,9 +87,7 @@ GROUND = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)")
 
 
 def kind(r) -> str:
-    """mc | yesno | word | span | open | yn (one yes/no question: the game)."""
-    if r["source"] == "game":
-        return "mc" if "options" in r else "yn"
+    """mc | yesno | word | span | open."""
     if r["source"] == "clevrer":
         return "yesno" if "options" in r else "word"
     if r["source"] == "charades_sta":
@@ -101,8 +106,6 @@ def turns(r) -> list[tuple[str, str]]:
     if k == "yesno":
         return [(f"{r['question']}\nOption: {o}\nIs this option correct? Answer yes or no.", YES if c else NO)
                 for o, c in zip(r["options"], r["correct"])]
-    if k == "yn":
-        return [(f"{r['question']}\nAnswer yes or no.", YES if r["answer"] else NO)]
     if k == "word":
         return [(f"{r['question']}\nAnswer with a single word or number.", r["answer"])]
     if k == "span":
@@ -117,13 +120,6 @@ def load_row_video(r, n_frames):
     from openjev.video import load_video
     with storage.drive_guard():
         return load_video(storage.path(r["video"]), n_frames=n_frames)
-
-
-def game_clip(frames, fps):
-    """Consecutive game frames as a sampled video (timestamps at the frame midpoints)."""
-    from openjev.video import SampledVideo
-    n = len(frames)
-    return SampledVideo(frames, [(i + 0.5) / fps for i in range(n)], n / fps, frames[0].width, frames[0].height, "", 0)
 
 
 def parse_span(text):
@@ -324,6 +320,18 @@ def mix(args):
         picked += got
         meta["sources"][src] = {"questions": len(got), "videos": len({r["video_id"] for r in got}),
                                 "pool_videos_dropped_as_eval": dropped}
+    items = pack(picked, rng)
+    rng.shuffle(items)
+    write(TRAIN_MIX, items)
+    meta["total"] = {"questions": len(picked), "videos": len(items), "turns": sum(len(i["turns"]) for i in items)}
+    with storage.drive_guard(), open(storage.path(*MAN, "train_mix_meta.json"), "w") as f:
+        json.dump(meta, f, indent=1)
+    print(json.dumps(meta, indent=1))
+    overlap(args, TRAIN_MIX)
+
+
+def pack(picked, rng):
+    """One row per video, its questions (shuffled) packed into one multi-turn conversation."""
     by = defaultdict(list)
     for r in picked:
         by[(r["source"], r["video_id"])].append(r)
@@ -333,19 +341,46 @@ def mix(args):
         t = [list(x) for q in qs for x in turns(q)]
         items.append({"source": src, "video_id": vid, "video": qs[0]["video"], "questions": len(qs), "turns": t,
                       **({"zip_member": qs[0]["zip_member"]} if "zip_member" in qs[0] else {})})
-    rng.shuffle(items)
-    write("vdm/manifests/train_mix.jsonl", items)
-    meta["total"] = {"questions": len(picked), "videos": len(items), "turns": sum(len(i["turns"]) for i in items)}
-    with storage.drive_guard(), open(storage.path(*MAN, "train_mix_meta.json"), "w") as f:
+    return items
+
+
+def stage_b(args):
+    """Stage B mix: ``STAGEB`` TrafficQA pool videos + Stage A replay videos (already packed)."""
+    storage.require_root()
+    if os.path.exists(storage.path(STAGEB_MIX)) and not args.force:
+        sys.exit(f"{STAGEB_MIX} exists; pass --force to rebuild it")
+    pool = rows("vdm/manifests/trafficqa_pool.jsonl")
+    vids = sorted({r["video_id"] for r in pool})
+    random.Random(f"{SEED}-stageB").shuffle(vids)
+    keep = set(vids[:STAGEB["trafficqa_videos"]])
+    picked = sample([r for r in pool if r["video_id"] in keep], len(pool), STAGEB["cap"],
+                    random.Random(f"{SEED}-trafficqa"), balance="type")
+    replay = random.Random(f"{SEED}-replay").sample(rows(TRAIN_MIX), STAGEB["replay_videos"])
+    items = pack(picked, random.Random(SEED)) + replay
+    random.Random(SEED).shuffle(items)
+    write(STAGEB_MIX, items)
+    src = defaultdict(lambda: {"questions": 0, "videos": 0, "turns": 0})
+    for i in items:
+        s = src[i["source"]]
+        s["questions"] += i["questions"]
+        s["videos"] += 1
+        s["turns"] += len(i["turns"])
+    types = defaultdict(int)
+    for r in picked:
+        types[r["type"]] += 1
+    meta = {"seed": SEED, **STAGEB, "sources": dict(src), "trafficqa_types": dict(sorted(types.items())),
+            "total": {"questions": sum(s["questions"] for s in src.values()), "videos": len(items),
+                      "turns": sum(s["turns"] for s in src.values())}}
+    with storage.drive_guard(), open(storage.path(*MAN, "stageB_mix_meta.json"), "w") as f:
         json.dump(meta, f, indent=1)
     print(json.dumps(meta, indent=1))
-    overlap(args)
+    overlap(args, STAGEB_MIX)
 
 
-def overlap(args):
+def overlap(args, rel=None):
     """By normalised video ID (YouTube IDs with and without ``ytb_``), every eval set against the mix."""
     storage.require_root()
-    train = {norm_id(r["video_id"]): r["source"] for r in rows("vdm/manifests/train_mix.jsonl")}
+    train = {norm_id(r["video_id"]): r["source"] for r in rows(rel or args.mix)}
     bad = 0
     for name, rel in EVAL.items():
         if not os.path.exists(storage.path(rel)):
@@ -367,7 +402,7 @@ def extract(args):
     storage.require_root()
     need = defaultdict(dict)  # source -> {archive member basename or member: dest}
     sets = [rows(rel) for name, rel in EVAL.items() if name not in BENCH]
-    for r in [r for s in sets for r in s] + rows("vdm/manifests/train_mix.jsonl"):
+    for r in [r for s in sets for r in s] + rows(TRAIN_MIX):
         if not r["video"].startswith("vdm/videos/") or os.path.exists(storage.path(r["video"])):
             continue
         src = r["video"].split("/")[2]
@@ -401,12 +436,14 @@ def extract(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("bench", "fetch-bench", "overlap", "extract"):
+    for n in ("bench", "fetch-bench", "extract"):
         sub.add_parser(n)
     sub.add_parser("mix").add_argument("--force", action="store_true")
+    sub.add_parser("stageb").add_argument("--force", action="store_true")
+    sub.add_parser("overlap").add_argument("--mix", default=TRAIN_MIX)
     args = ap.parse_args(argv)
     try:
-        {"bench": bench, "fetch-bench": fetch_bench, "mix": mix, "overlap": overlap, "extract": extract}[args.cmd](args)
+        {"bench": bench, "fetch-bench": fetch_bench, "mix": mix, "stageb": stage_b, "overlap": overlap, "extract": extract}[args.cmd](args)
     except storage.DriveMissing as exc:
         sys.exit(f"ERROR: {exc}")
 

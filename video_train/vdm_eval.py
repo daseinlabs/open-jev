@@ -68,8 +68,6 @@ def finish(r, k, res):
     """Result fields from a readout: ``res`` is option probs (mc), P(Yes) per option, or text."""
     if k == "mc":
         return {"probs": res.tolist(), "pred": int(res.argmax()), "correct": int(res.argmax()) == r["answer_id"]}
-    if k == "yn":
-        return {"p_yes": res, "correct": (res > 0.5) == r["answer"]}
     if k == "yesno":
         right = [(p > 0.5) == c for p, c in zip(res, r["correct"])]
         return {"p_yes": res, "option_correct": right, "correct": all(right)}
@@ -109,8 +107,6 @@ class Qwen:
             return finish(r, k, probs(ts[0][0], self.inp.letter_ids[:len(r["options"])]))
         if k == "yesno":
             return finish(r, k, [float(probs(t, self.yes_no)[0]) for t, _ in ts])
-        if k == "yn":
-            return finish(r, k, float(probs(ts[0][0], self.yes_no)[0]))
         return finish(r, k, q3.generate(m, self.inp, self.inp.encode([(ts[0][0], None)], self.video, True),
                                         self.pre, MAX_TOKENS))
 

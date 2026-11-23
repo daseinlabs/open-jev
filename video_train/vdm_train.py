@@ -1,10 +1,12 @@
-"""Stage 3 of docs/video-decision-model-plan.md: LoRA on the stage 2 mix (Qwen3-VL-4B, MLX 8-bit).
+"""Stage 3 and Stage B of docs/video-decision-model-plan.md: LoRA on a mix (Qwen3-VL-4B, MLX 8-bit).
 
-    python -m video_train.vdm_train train                                  # one pass, ~58 h (resumable)
+    python -m video_train.vdm_train train                                  # Stage A: one pass, ~58 h (resumable)
+    python -m video_train.vdm_train train --tag stageB_ep1 --mix vdm/manifests/stageB_mix.jsonl \
+        --lr 5e-5 --init-adapter "<DATA_ROOT>/vdm/checkpoints/stageA_ep1"  # Stage B: ~27 h
     python -m video_train.vdm_train train --tag smoke --limit-videos 16 --dev-videos 2 --save-every 1
     python -m video_train.vdm_eval run --set all --tag stageA_ep1 --adapter "<DATA_ROOT>/vdm/checkpoints/stageA_ep1"
 
-Data: ``vdm/manifests/train_mix.jsonl``, one row per video with its questions packed into one
+Data: ``--mix`` (default ``vdm/manifests/train_mix.jsonl``), one row per video with its questions packed into one
 multi-turn conversation (``qwen3vl.Inputs.encode``); 16 frames, 192 vision tokens per 2 frames
 (the stage 1 format). One forward and backward per video; the encoder stays frozen.
 
@@ -21,6 +23,9 @@ Logs, in ``<DATA_ROOT>/vdm/checkpoints/<tag>/``:
 - ``dev_curve.jsonl`` every ``--dev-every`` steps: a fixed sample of each dev set
   (``--dev-videos`` videos per set, all their questions), scored as ``vdm_eval`` scores it:
   accuracy per set and mean NLL of the right option on multiple choice.
+
+``--init-adapter``: start from a trained LoRA (same rank and alpha) instead of a fresh one; the
+optimizer state and schedule start fresh.
 
 Resumable: the adapter, optimizer state and step are saved every ``--save-every`` steps; a rerun
 under the same tag continues (and refuses a different config). The adapter is in the
@@ -109,13 +114,13 @@ def train(args):
 
     storage.require_root()
     awake = storage.keep_awake()
-    data = rows(MIX)
+    data = rows(args.mix)
     if args.limit_videos:
         data = data[:args.limit_videos]
     steps_per_epoch = math.ceil(len(data) / args.videos_per_step)
     total = steps_per_epoch * args.epochs
     warmup = max(1, int(total * args.warmup))
-    config = {"model": MLX8, "mix": MIX, "videos": len(data), "turns": sum(len(r["turns"]) for r in data),
+    config = {"model": MLX8, "mix": args.mix, **({"init_adapter": args.init_adapter} if args.init_adapter else {}), "videos": len(data), "turns": sum(len(r["turns"]) for r in data),
               "epochs": args.epochs, "videos_per_step": args.videos_per_step, "lr": args.lr, "warmup": args.warmup,
               "rank": args.rank, "lora_alpha": args.lora_alpha, "clip": 1.0, "seed": args.seed,
               "frames": args.frames, "tokens": args.tokens, "loss": "mean over turns of per-turn token CE",
@@ -140,6 +145,17 @@ def train(args):
         model.load_weights(list(mx.load(os.path.join(d, "adapter.safetensors")).items()), strict=False)
         opt.state = tree_unflatten(list(mx.load(os.path.join(d, "optimizer.safetensors")).items()))
         print(f"{args.tag}: resuming at step {state['step']}/{total}", flush=True)
+    elif args.init_adapter:
+        cfg = json.load(open(os.path.join(args.init_adapter, "adapter_config.json")))
+        if (cfg["rank"], cfg["alpha"]) != (args.rank, args.lora_alpha):
+            sys.exit(f"{args.init_adapter} is rank {cfg['rank']} / alpha {cfg['alpha']}, "
+                     f"not {args.rank} / {args.lora_alpha}")
+        w = mx.load(os.path.join(args.init_adapter, "adapter.safetensors"))
+        lora = {k for k, _ in tree_flatten(model.trainable_parameters()) if k.endswith(("lora_a", "lora_b"))}
+        if set(w) != lora:
+            sys.exit(f"{args.init_adapter}: LoRA layers differ from this model's ({len(w)} vs {len(lora)} tensors)")
+        model.load_weights(list(w.items()), strict=False)
+        print(f"{args.tag}: starting from {args.init_adapter}", flush=True)
     b = Qwen(args.tokens, model=model, inp=inp)
     sample = dev_sample(args.dev_videos) if args.dev_every else None
     curve = os.path.join(d, "dev_curve.jsonl")
@@ -211,7 +227,7 @@ def train(args):
             dev_curve(b, sample, args.frames, done, curve)
     pool.shutdown()
     log_f.close()
-    log_run("vdm-3", "train", dict(config, tag=args.tag), {"manifest": MIX}, args.seed,
+    log_run("vdm-3", "train", dict(config, tag=args.tag), {"manifest": args.mix}, args.seed,
             {"steps": total, "train_s": time.time() - t_start})
     print(f"done: python -m video_train.vdm_eval run --set all --tag {args.tag} --adapter \"{d}\"")
     if awake:
@@ -223,6 +239,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("train")
     t.add_argument("--tag", default="stageA_ep1")
+    t.add_argument("--mix", default=MIX, help="training manifest (relative to DATA_ROOT)")
+    t.add_argument("--init-adapter", default="", help="start from this trained LoRA directory")
     t.add_argument("--epochs", type=int, default=1, help="passes over the mix")
     t.add_argument("--videos-per-step", type=int, default=8)
     t.add_argument("--lr", type=float, default=1e-4)

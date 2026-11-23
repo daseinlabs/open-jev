@@ -2,6 +2,7 @@
 
     python -m video_train.vdm_splits make      # writes vdm/manifests/, refuses to overwrite
     python -m video_train.vdm_splits check     # disjointness and counts of what is on the drive
+    python -m video_train.vdm_splits trafficqa # SUTD-TrafficQA dev/test/pool (added 2026-11-20)
 
 Held out by video (never by question), seed 0, before any training data is sampled. Per
 dataset: ``<ds>_dev.jsonl`` and ``<ds>_test.jsonl``, plus ``<ds>_pool.jsonl`` (every other
@@ -115,6 +116,53 @@ def llava_video(listing):
     return out
 
 
+TRAFFICQA = {"dev": 500, "test": 1000}
+
+
+def trafficqa(path):
+    """SUTD-TrafficQA ``R2_*.jsonl``: a header array, then one array per question; 2-4 options
+    (unused slots empty), ``answer`` a 0-based index into option0..option3."""
+    out, skipped = [], 0
+    with open(path) as f:
+        head = json.loads(next(f))
+        for line in f:
+            r = dict(zip(head, json.loads(line)))
+            slots = [r[f"option{i}"] for i in range(4)]
+            keep = [i for i, o in enumerate(slots) if str(o).strip()]
+            if r["answer"] not in keep:
+                skipped += 1
+                continue
+            out.append({"source": "trafficqa", "video_id": r["vid_filename"][:-4], "qid": r["record_id"],
+                        "type": r["q_type"], "perspective": r["perspective"], "question": r["q_body"],
+                        "options": [slots[i] for i in keep], "answer_id": keep.index(r["answer"]),
+                        "video": f"vdm/videos/trafficqa/{r['vid_filename']}"})
+    return out, skipped
+
+
+def make_trafficqa(args):
+    """Dev from R2_train videos, test from R2_test videos; pool = the other R2_train videos."""
+    storage.require_root()
+    meta_path = storage.path(*OUT, "trafficqa_meta.json")
+    if os.path.exists(meta_path):
+        sys.exit("vdm/manifests/trafficqa_meta.json exists: the splits are fixed; not overwriting")
+    train, skip_tr = trafficqa(raw("trafficqa", "R2_train.jsonl"))
+    test_rows, skip_te = trafficqa(raw("trafficqa", "R2_test.jsonl"))
+    test_vids = {r["video_id"] for r in test_rows}
+    rng = random.Random(f"{SEED}-trafficqa")
+    dev, dv = hold_out(train, TRAFFICQA["dev"], rng, exclude=test_vids)
+    test, _ = hold_out(test_rows, TRAFFICQA["test"], rng)
+    pool = [r for r in train if r["video_id"] not in dv | test_vids]
+    meta = {"seed": SEED, "per_video": PER_VIDEO, "sizes": TRAFFICQA, "skipped": {"train": skip_tr, "test": skip_te},
+            "inputs": {p: sha256(raw("trafficqa", p)) for p in ("R2_train.jsonl", "R2_test.jsonl")}, "counts": {}}
+    for split, rs in (("dev", dev), ("test", test), ("pool", pool)):
+        write("trafficqa", rs, split)
+        meta["counts"][split] = {"questions": len(rs), "videos": len({r["video_id"] for r in rs})}
+    with storage.drive_guard(), open(meta_path, "w") as f:
+        json.dump(meta, f, indent=1)
+    print(json.dumps(meta["counts"], indent=1))
+    check(args)
+
+
 def hold_out(rows, n, rng, eligible=lambda v: True, exclude=frozenset()):
     """Sample whole videos (<= PER_VIDEO random questions each) until ``n`` questions."""
     by = defaultdict(list)
@@ -205,7 +253,7 @@ def check(args):
     storage.require_root()
     vids = lambda rows: {(r["video"]) for r in rows}
     held, pools, bad = set(), set(), []
-    for name in SIZES:
+    for name in (*SIZES, "trafficqa"):
         dev = load_manifest("nextqa_val1000") if name == "nextqa" else _load(name, "dev")
         test, pool = _load(name, "test"), _load(name, "pool")
         if vids(dev) & vids(test):
@@ -230,9 +278,10 @@ def main(argv=None):
     m = sub.add_parser("make")
     m.add_argument("--llava-listing", required=True, help="file listing chunk 1 (tar tzf ... > file)")
     sub.add_parser("check")
+    sub.add_parser("trafficqa")
     args = ap.parse_args(argv)
     try:
-        {"make": make, "check": check}[args.cmd](args)
+        {"make": make, "check": check, "trafficqa": make_trafficqa}[args.cmd](args)
     except storage.DriveMissing as exc:
         sys.exit(f"ERROR: {exc}")
 

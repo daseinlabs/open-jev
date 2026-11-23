@@ -1,6 +1,6 @@
 import random
 
-from video_train.vdm_data import kind, norm_id, parse_span, sample, turns
+from video_train.vdm_data import kind, norm_id, pack, parse_span, sample, turns
 from video_train.vdm_eval import iou
 
 
@@ -49,3 +49,28 @@ def test_train_order_is_a_fixed_permutation_per_pass():
     from video_train.vdm_train import order
     assert sorted(order(10, 0, 0)) == list(range(10)) and order(10, 0, 0) == order(10, 0, 0)
     assert order(10, 0, 0) != order(10, 0, 1)
+
+
+def test_trafficqa_rows_drop_empty_options_and_remap_answer(tmp_path):
+    import json
+    from video_train.vdm_splits import trafficqa
+    head = ["record_id", "vid_id", "vid_filename", "perspective", "q_body", "q_type",
+            "option0", "option1", "option2", "option3", "answer"]
+    lines = [head,
+             [1, 10, "b_a_clip_001.mp4", 1, "What happened?", "A", "Crash", "No accident", "", "", 1],
+             [2, 11, "b_b_clip_002.mp4", 3, "Why?", "C", "x", "", "y", "z", 2],
+             [3, 12, "b_c_clip_003.mp4", 1, "Bad", "U", "x", "y", "", "", 2]]
+    p = tmp_path / "R2.jsonl"
+    p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    rs, skipped = trafficqa(p)
+    assert skipped == 1 and [r["options"] for r in rs] == [["Crash", "No accident"], ["x", "y", "z"]]
+    assert [r["answer_id"] for r in rs] == [1, 1] and rs[0]["video"] == "vdm/videos/trafficqa/b_a_clip_001.mp4"
+    assert rs[0]["video_id"] == "b_a_clip_001" and kind(rs[0]) == "mc" and turns(rs[1])[0][1] == "B"
+
+
+def test_pack_one_row_per_video_with_all_its_turns():
+    qs = [{"source": "trafficqa", "video_id": v, "qid": i, "question": "Q?", "options": ["a", "b"], "answer_id": i % 2,
+           "video": f"vdm/videos/trafficqa/{v}.mp4"} for v, i in (("x", 0), ("x", 1), ("y", 2))]
+    items = {i["video_id"]: i for i in pack(qs, random.Random(0))}
+    assert items["x"]["questions"] == 2 and sorted(a for _, a in items["x"]["turns"]) == ["A", "B"]
+    assert items["y"]["turns"] == [list(turns(qs[2])[0])] and items["y"]["video"].endswith("y.mp4")
