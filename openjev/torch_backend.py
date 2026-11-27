@@ -25,8 +25,12 @@ class TorchBackend:
         if self.device.type == "mps" and not torch.backends.mps.is_available():
             raise ValueError("MPS is unavailable on this machine")
         # Gemma's activations overflow float16 (NaN hidden states), so use bfloat16 where
-        # the device has it (CUDA from Ampere, MPS) and float32 otherwise (e.g. T4, V100, CPU).
+        # the device has it (CUDA from Ampere, MPS) and float32 otherwise (e.g. T4, V100).
+        # CPU exception: bf16 halves the ~18G fp32 working set to ~9G and avoids the
+        # swap churn seen with gemma-3-4b-it on 30G workstations.
         dtype = torch.float32
+        if self.device.type == "cpu":
+            dtype = torch.bfloat16
         if self.device.type == "cuda":
             with torch.cuda.device(self.device):
                 dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32

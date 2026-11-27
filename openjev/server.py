@@ -7,14 +7,33 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from . import lane_metrics
 from .scorer import DEFAULT_MODEL, OptionScorer
 from .systemone import SystemOneRequest, SystemOneResponse, system_one
+
+# Bound in-flight inference. Every route here is a sync `def`, so Starlette
+# dispatches it to anyio's 40-token threadpool. An unbounded burst of scoring
+# requests fills all 40 workers with multi-minute Gemma3 forwards, /health
+# can no longer get a slot, and the process must be SIGKILLed. Reject excess
+# work immediately instead of queueing it into another pileup.
+_MAX_INFLIGHT = max(1, int(os.environ.get("OPENJEV_MAX_INFLIGHT", "2")))
+_INFER_GATE = threading.Semaphore(_MAX_INFLIGHT)
+
+
+def _acquire_infer_slot() -> None:
+    if not _INFER_GATE.acquire(blocking=False):
+        raise HTTPException(
+            429,
+            f"too many concurrent inference requests (max {_MAX_INFLIGHT}); retry later",
+            headers={"Retry-After": "60"},
+        )
 
 
 class ScoreRequest(BaseModel):
@@ -46,6 +65,7 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
     model_path = model_path or os.environ.get("OPENJEV_MODEL", DEFAULT_MODEL)
     adapter_path = os.environ.get("OPENJEV_ADAPTER")  # optional LoRA adapter dir
     app = FastAPI(title="openjev", version="0.1.0")
+    lane_metrics.attach(app)
     state: dict = {}
     api_key = os.environ.get("OPENJEV_API_KEY")  # if set, /v1/systemone requires "Authorization: Bearer <key>"
     model_name = os.path.basename(model_path.rstrip("/"))
@@ -71,10 +91,13 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
         scorer: OptionScorer = state.get("scorer")
         if scorer is None:
             raise HTTPException(503, "model still loading")
+        _acquire_infer_slot()
         try:
             res = scorer.score(req.context, req.options, norm=req.norm, chat=req.chat, sep=req.sep)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        finally:
+            _INFER_GATE.release()
         best = max(range(len(res)), key=lambda i: res[i].score)
         return ScoreResponse(
             best=res[best].option,
@@ -89,10 +112,20 @@ def create_app(model_path: str | None = None, batch_size: int = 8, backend: str 
         scorer: OptionScorer = state.get("scorer")
         if scorer is None:
             raise HTTPException(503, "model still loading")
+        _acquire_infer_slot()
+        t0 = time.perf_counter()
         try:
-            return system_one(scorer, req, model_name=req.model or model_name)
+            resp = system_one(scorer, req, model_name=req.model or model_name)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        finally:
+            _INFER_GATE.release()
+        # every question type gets a real scored answer here — no
+        # stub/heavier-tier fallback path, so escalations stay 0.
+        lane_metrics.METRICS.observe(time.perf_counter() - t0,
+                                     questions=len(resp.answers),
+                                     escalations=0)
+        return resp
 
     return app
 
